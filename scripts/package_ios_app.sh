@@ -42,13 +42,14 @@ mkdir -p "$APP" "$OUT/obj"
 # The application entry point (SwiftUI @main) and all of the engine and editor are in the library;
 # swiftc is used as the linker driver so that the Swift runtime is linked as well.
 echo "import Foundation" > "$OUT/obj/link_stub.swift"
+xcrun --sdk "$SDK" clang++ -target "$TARGET" -isysroot "$SDK_PATH" -Os -c "$ROOT/app/plugins_stub.cpp" -o "$OUT/obj/plugins_stub.o"
 FRAMEWORKS=(Foundation UIKit SwiftUI QuartzCore Metal OpenGLES AVFoundation AVFAudio AudioToolbox
 	CoreAudio CoreMIDI CoreMotion CoreHaptics CoreText CoreGraphics CoreVideo CoreMedia
 	GameController UniformTypeIdentifiers Security)
 FW_ARGS=()
 for fw in "${FRAMEWORKS[@]}"; do FW_ARGS+=(-framework "$fw"); done
 xcrun --sdk "$SDK" swiftc -parse-as-library -target "$TARGET" -sdk "$SDK_PATH" -Osize \
-	"$OUT/obj/link_stub.swift" "$LIB" -o "$APP/$EXECUTABLE" \
+	"$OUT/obj/link_stub.swift" "$OUT/obj/plugins_stub.o" "$LIB" -o "$APP/$EXECUTABLE" \
 	"${FW_ARGS[@]}" -Xlinker -weak_framework -Xlinker MetalFX \
 	-lc++ -lz \
 	-Xlinker -ObjC -Xlinker -dead_strip \

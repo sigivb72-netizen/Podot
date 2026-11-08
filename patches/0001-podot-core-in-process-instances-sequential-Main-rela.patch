@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 11:10:02 +0000
+Date: Sun, 8 Nov 2026 11:31:22 +0000
 Subject: [PATCH 1/4] podot: core: in-process instances (sequential Main
  relaunch in one process)
 
@@ -25,9 +25,9 @@ the platform main loop fully cleans up Main and sets it up again with them.
  core/os/os.h                         |  39 ++++++-
  core/string/string_name.cpp          |  43 +++++++
  core/string/string_name.h            |   4 +
- main/main.cpp                        | 165 +++++++++++++++++++++++++++
+ main/main.cpp                        | 168 +++++++++++++++++++++++++++
  platform/linuxbsd/godot_linuxbsd.cpp |  61 ++++++++--
- 12 files changed, 394 insertions(+), 32 deletions(-)
+ 12 files changed, 397 insertions(+), 32 deletions(-)
 
 diff --git a/core/io/ip.cpp b/core/io/ip.cpp
 index ec7c72d..863a78c 100644
@@ -421,7 +421,7 @@ index 0619af8..e0a6f10 100644
  	struct DebugSortReferences {
  		bool operator()(const _Data *p_left, const _Data *p_right) const {
 diff --git a/main/main.cpp b/main/main.cpp
-index 2fc62fd..b72791d 100644
+index 2fc62fd..f23c48d 100644
 --- a/main/main.cpp
 +++ b/main/main.cpp
 @@ -297,6 +297,124 @@ bool profile_gpu = false;
@@ -560,7 +560,7 @@ index 2fc62fd..b72791d 100644
  	Thread::release_main_thread();
  }
  #endif // TESTS_ENABLED
-@@ -1037,7 +1159,22 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
+@@ -1037,7 +1159,25 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
  	Thread::make_main_thread();
  	set_current_thread_safe_for_nodes(true);
  
@@ -574,6 +574,9 @@ index 2fc62fd..b72791d 100644
 +		Main::force_redraw_requested = false;
 +		Main::iterating = 0;
 +		_reset_main_iteration_state();
++		// Benchmark marks are recorded once per setup (Main is a friend of OS).
++		OS::get_singleton()->benchmark_marks_from.clear();
++		OS::get_singleton()->benchmark_marks_final.clear();
 +	}
 +
  	OS::get_singleton()->initialize();
@@ -583,7 +586,7 @@ index 2fc62fd..b72791d 100644
  
  	CoreGlobals::print_ready = true;
  
-@@ -2986,6 +3123,7 @@ error:
+@@ -2986,6 +3126,7 @@ error:
  		memdelete(engine);
  	}
  
@@ -591,7 +594,7 @@ index 2fc62fd..b72791d 100644
  	unregister_core_types();
  
  	OS::get_singleton()->_cmdline.clear();
-@@ -3006,6 +3144,10 @@ error:
+@@ -3006,6 +3147,10 @@ error:
  	OS::get_singleton()->finalize_core();
  	locale = String();
  
@@ -602,7 +605,7 @@ index 2fc62fd..b72791d 100644
  	Thread::release_main_thread();
  
  	return exit_err;
-@@ -4915,6 +5057,13 @@ static uint64_t physics_process_max = 0;
+@@ -4915,6 +5060,13 @@ static uint64_t physics_process_max = 0;
  static uint64_t process_max = 0;
  static uint64_t navigation_process_max = 0;
  
@@ -616,7 +619,7 @@ index 2fc62fd..b72791d 100644
  // Return false means iterating further, returning true means `OS::run`
  // will terminate the program. In case of failure, the OS exit code needs
  // to be set explicitly here (defaults to EXIT_SUCCESS).
-@@ -5258,6 +5407,14 @@ void Main::cleanup(bool p_force) {
+@@ -5258,6 +5410,14 @@ void Main::cleanup(bool p_force) {
  
  	OS::get_singleton()->delete_main_loop();
  
@@ -631,7 +634,7 @@ index 2fc62fd..b72791d 100644
  	OS::get_singleton()->_cmdline.clear();
  	OS::get_singleton()->_user_args.clear();
  	OS::get_singleton()->_execpath = "";
-@@ -5395,6 +5552,10 @@ void Main::cleanup(bool p_force) {
+@@ -5395,6 +5555,10 @@ void Main::cleanup(bool p_force) {
  		memdelete(engine);
  	}
  
@@ -642,7 +645,7 @@ index 2fc62fd..b72791d 100644
  	unregister_core_types();
  
  	OS::get_singleton()->benchmark_end_measure("Shutdown", "Main::Cleanup");
-@@ -5402,5 +5563,9 @@ void Main::cleanup(bool p_force) {
+@@ -5402,5 +5566,9 @@ void Main::cleanup(bool p_force) {
  
  	OS::get_singleton()->finalize_core();
  
