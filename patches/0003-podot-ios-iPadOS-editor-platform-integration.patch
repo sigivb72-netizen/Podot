@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 10:53:26 +0000
+Date: Sun, 8 Nov 2026 11:10:02 +0000
 Subject: [PATCH 3/4] podot: ios: iPadOS editor platform integration
 
 - Enable editor builds' in-process instances; relaunch Main in-process
@@ -26,6 +26,7 @@ Subject: [PATCH 3/4] podot: ios: iPadOS editor platform integration
  drivers/apple_embedded/godot_view_renderer.h  |   2 +
  drivers/apple_embedded/godot_view_renderer.mm |  13 +-
  drivers/apple_embedded/os_apple_embedded.h    |  10 +
+ drivers/apple_embedded/os_apple_embedded.mm   |   2 +
  platform/ios/SCsub                            |   2 +
  platform/ios/display_server_ios.h             |   3 +
  platform/ios/display_server_ios.mm            |  22 ++
@@ -36,7 +37,7 @@ Subject: [PATCH 3/4] podot: ios: iPadOS editor platform integration
  platform/ios/main_ios.mm                      |  46 ++++
  platform/ios/os_ios.h                         |  12 +
  platform/ios/os_ios.mm                        | 127 +++++++++
- 19 files changed, 1265 insertions(+), 37 deletions(-)
+ 20 files changed, 1267 insertions(+), 37 deletions(-)
  create mode 100644 drivers/apple_embedded/display_server_apple_embedded_pointer.mm
  create mode 100644 platform/ios/ios_document_picker.h
  create mode 100644 platform/ios/ios_document_picker.mm
@@ -894,6 +895,24 @@ index d801a86..66fb07f 100644
  	void start();
  
  	virtual void alert(const String &p_alert, const String &p_title = "ALERT!") override;
+diff --git a/drivers/apple_embedded/os_apple_embedded.mm b/drivers/apple_embedded/os_apple_embedded.mm
+index 84e4821..eaa4d66 100644
+--- a/drivers/apple_embedded/os_apple_embedded.mm
++++ b/drivers/apple_embedded/os_apple_embedded.mm
+@@ -193,11 +193,13 @@ void OS_AppleEmbedded::deinitialize_modules() {
+ #ifdef SDL_ENABLED
+ 	if (joypad_sdl) {
+ 		memdelete(joypad_sdl);
++		joypad_sdl = nullptr; // Main can be set up again in this process (in-process instances).
+ 	}
+ #endif
+ 
+ 	if (apple_embedded) {
+ 		memdelete(apple_embedded);
++		apple_embedded = nullptr;
+ 	}
+ }
+ 
 diff --git a/platform/ios/SCsub b/platform/ios/SCsub
 index 92f6c17..37e02bc 100644
 --- a/platform/ios/SCsub

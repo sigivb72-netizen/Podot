@@ -23,7 +23,7 @@ BUILD_NUMBER="${BUILD_NUMBER:-1}"
 if [ "$VARIANT" = "simulator" ]; then
 	SDK=iphonesimulator
 	TARGET="arm64-apple-ios$MIN_OS-simulator"
-	LIB="$GODOT/bin/libgodot.ios.editor.simulator.arm64.a"
+	LIB="$GODOT/bin/libgodot.ios.editor.arm64.simulator.a"
 	SUPPORTED_PLATFORM=iPhoneSimulator
 else
 	SDK=iphoneos
@@ -42,8 +42,8 @@ mkdir -p "$APP" "$OUT/obj"
 # The application entry point (SwiftUI @main) and all of the engine and editor are in the library;
 # swiftc is used as the linker driver so that the Swift runtime is linked as well.
 echo "import Foundation" > "$OUT/obj/link_stub.swift"
-FRAMEWORKS=(Foundation UIKit SwiftUI QuartzCore Metal OpenGLES AVFoundation AVFAudio AudioToolbox AudioUnit
-	CoreAudio CoreMIDI CoreMotion CoreHaptics CoreText CoreGraphics CoreVideo CoreMedia CoreServices
+FRAMEWORKS=(Foundation UIKit SwiftUI QuartzCore Metal OpenGLES AVFoundation AVFAudio AudioToolbox
+	CoreAudio CoreMIDI CoreMotion CoreHaptics CoreText CoreGraphics CoreVideo CoreMedia
 	GameController UniformTypeIdentifiers Security)
 FW_ARGS=()
 for fw in "${FRAMEWORKS[@]}"; do FW_ARGS+=(-framework "$fw"); done
@@ -52,7 +52,7 @@ xcrun --sdk "$SDK" swiftc -parse-as-library -target "$TARGET" -sdk "$SDK_PATH" -
 	"${FW_ARGS[@]}" -Xlinker -weak_framework -Xlinker MetalFX \
 	-lc++ -lz \
 	-Xlinker -ObjC -Xlinker -dead_strip \
-	-Xlinker -rpath -Xlinker /usr/lib/swift -Xlinker -rpath -Xlinker @executable_path/Frameworks
+	-Xlinker -rpath -Xlinker @executable_path/Frameworks
 xcrun strip -x "$APP/$EXECUTABLE"
 
 sed -e "s|@DISPLAY_NAME@|$DISPLAY_NAME|g" -e "s|@EXECUTABLE@|$EXECUTABLE|g" -e "s|@BUNDLE_ID@|$BUNDLE_ID|g" \

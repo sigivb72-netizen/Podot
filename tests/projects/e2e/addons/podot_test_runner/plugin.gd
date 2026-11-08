@@ -48,6 +48,10 @@ func _enter_tree() -> void:
 		await get_tree().process_frame
 	if state.get("stage", "") == "after_game":
 		await _stage_after_game()
+	elif state.get("stage", "") == "after_restart":
+		await _stage_after_restart()
+	elif state.get("stage", "") == "done":
+		return
 	else:
 		await _stage_editor()
 
@@ -407,6 +411,20 @@ func _stage_after_game() -> void:
 	var open_scenes := EditorInterface.get_open_scenes()
 	check("scenes_restored_after_reopen", open_scenes.has(state.get("scene_path", "")), open_scenes)
 	check("in_process_relaunch", OS.get_name() != "iOS" or ResourceLoader.exists("res://game/main.tscn"))
+
+	# Project > Reload Current Project restarts the editor (in-process on iPadOS).
+	EditorInterface.save_all_scenes()
+	await _wait_frames(5)
+	_save_state("after_restart")
+	_write_results(false)
+	print("[e2e] restarting the editor")
+	EditorInterface.restart_editor.call_deferred(false)
+
+
+func _stage_after_restart() -> void:
+	print("[e2e] editor is back after a restart")
+	check("editor_restart", true)
+	check("scenes_restored_after_restart", EditorInterface.get_open_scenes().has(state.get("scene_path", "")), EditorInterface.get_open_scenes())
 	_save_state("done")
 	_write_results(true)
 	print("[e2e] finished")

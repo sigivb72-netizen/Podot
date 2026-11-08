@@ -49,6 +49,11 @@ if grep -q "Running the project in-process" "$RESULTS/e2e.log" && grep -q "\[gam
 else
 	result FAIL in_process_editor_game_editor "see e2e.log"
 fi
+if grep -q "\[e2e\] editor is back after a restart" "$RESULTS/e2e.log"; then
+	result PASS in_process_editor_restart "Reload Current Project relaunched the editor in-process"
+else
+	result FAIL in_process_editor_restart "see e2e.log"
+fi
 if grep -q -- "--- Game session finished" "$RESULTS/e2e.log"; then
 	result PASS game_output_shown_in_editor_log
 else
