@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 10:25:04 +0000
+Date: Sun, 8 Nov 2026 10:27:54 +0000
 Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  adaptations
 
@@ -23,7 +23,7 @@ Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  core/os/keyboard.cpp                          |   2 +-
  .../asset_library_editor_plugin.cpp           |   2 +-
  editor/docks/filesystem_dock.cpp              |   6 +-
- editor/editor_node.cpp                        | 159 ++++++++++++++++--
+ editor/editor_node.cpp                        | 163 ++++++++++++++++--
  editor/editor_node.h                          |  11 +-
  editor/gui/editor_file_dialog.cpp             |  10 +-
  editor/inspector/editor_resource_preview.cpp  |   7 +
@@ -40,7 +40,7 @@ Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  editor/script/script_text_editor.cpp          |   2 +-
  editor/settings/editor_settings.cpp           |  31 +++-
  scene/gui/file_dialog.cpp                     |   5 +-
- 21 files changed, 492 insertions(+), 44 deletions(-)
+ 21 files changed, 496 insertions(+), 44 deletions(-)
  create mode 100644 editor/project_manager/project_device_limits.cpp
  create mode 100644 editor/project_manager/project_device_limits.h
 
@@ -139,7 +139,7 @@ index 232fc24..e406526 100644
  	ED_SHORTCUT("filesystem_dock/show_in_explorer", TTRC("Open in File Manager"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::R);
  	ED_SHORTCUT("filesystem_dock/open_in_external_program", TTRC("Open in External Program"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::E);
 diff --git a/editor/editor_node.cpp b/editor/editor_node.cpp
-index 5bc4649..bcd3444 100644
+index 5bc4649..4c77bc2 100644
 --- a/editor/editor_node.cpp
 +++ b/editor/editor_node.cpp
 @@ -201,7 +201,7 @@
@@ -388,6 +388,20 @@ index 5bc4649..bcd3444 100644
  	fbx_importer_manager = memnew(FBXImporterManager);
  	gui_base->add_child(fbx_importer_manager);
  #endif
+@@ -9392,9 +9531,13 @@ EditorNode::EditorNode() {
+ 	add_editor_plugin(memnew(Node3DEditorPlugin));
+ 	add_editor_plugin(memnew(ScriptEditorPlugin));
+ 
++#ifndef APPLE_EMBEDDED_ENABLED
++	// On iPadOS, the game runs in the editor process after the editor closes (see
++	// run_game_in_process()), so the Game workspace (embedding, remote game controls) can't be used.
+ 	if (!Engine::get_singleton()->is_recovery_mode_hint()) {
+ 		add_editor_plugin(get_game_view_plugin());
+ 	}
++#endif
+ 
+ 	EditorAudioBuses *audio_bus_editor = EditorAudioBuses::register_editor();
+ 
 diff --git a/editor/editor_node.h b/editor/editor_node.h
 index f683e13..1eca773 100644
 --- a/editor/editor_node.h

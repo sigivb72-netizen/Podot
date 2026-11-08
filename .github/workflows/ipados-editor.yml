@@ -27,16 +27,21 @@ jobs:
           pip install scons
       - name: Fetch Godot and apply the port
         run: scripts/fetch_godot.sh
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .scons_cache
-          key: linux-editor-${{ hashFiles('UPSTREAM', 'patches/**') }}
+          key: linux-editor-${{ github.run_id }}
           restore-keys: linux-editor-
       - name: Build editor (with unit tests)
         run: |
           cd godot
-          scons platform=linuxbsd target=editor tests=yes debug_symbols=no -j$(nproc) \
+          scons -k platform=linuxbsd target=editor tests=yes debug_symbols=no -j$(nproc) \
             cache_path="$GITHUB_WORKSPACE/.scons_cache" cache_limit=$SCONS_CACHE_LIMIT
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .scons_cache
+          key: linux-editor-${{ github.run_id }}
       - name: Unit tests and in-process end-to-end test
         run: scripts/run_linux_tests.sh godot/bin/godot.linuxbsd.editor.x86_64 build/linux-results
       - uses: actions/upload-artifact@v4
@@ -55,15 +60,20 @@ jobs:
         run: pip3 install --break-system-packages scons || pip3 install scons
       - name: Fetch Godot and apply the port
         run: scripts/fetch_godot.sh
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .scons_cache
-          key: ios-device-${{ hashFiles('UPSTREAM', 'patches/**') }}
+          key: ios-device-${{ github.run_id }}
           restore-keys: ios-device-
       - name: Build editor library (arm64, Metal + OpenGL ES)
         env:
           SCONS_CACHE_DIR: ${{ github.workspace }}/.scons_cache
-        run: scripts/build_ios_editor.sh device
+        run: scripts/build_ios_editor.sh device -k
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .scons_cache
+          key: ios-device-${{ github.run_id }}
       - name: Import signing certificate (optional)
         env:
           IOS_CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
@@ -103,15 +113,20 @@ jobs:
           brew install cliclick || true
       - name: Fetch Godot and apply the port
         run: scripts/fetch_godot.sh
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .scons_cache
-          key: ios-simulator-${{ hashFiles('UPSTREAM', 'patches/**') }}
+          key: ios-simulator-${{ github.run_id }}
           restore-keys: ios-simulator-
       - name: Build editor library (arm64 simulator, OpenGL ES)
         env:
           SCONS_CACHE_DIR: ${{ github.workspace }}/.scons_cache
-        run: scripts/build_ios_editor.sh simulator
+        run: scripts/build_ios_editor.sh simulator -k
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .scons_cache
+          key: ios-simulator-${{ github.run_id }}
       - name: Package simulator app
         run: scripts/package_ios_app.sh simulator build/simulator
       - name: Run tests in the iPad Simulator
