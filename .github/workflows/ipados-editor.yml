@@ -23,7 +23,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential pkg-config
+          sudo apt-get install -y -qq build-essential pkg-config xvfb libgl1-mesa-dri libglx-mesa0
           pip install scons
       - name: Fetch Godot and apply the port
         run: scripts/fetch_godot.sh
@@ -130,6 +130,7 @@ jobs:
       - name: Package simulator app
         run: scripts/package_ios_app.sh simulator build/simulator
       - name: Run tests in the iPad Simulator
+        timeout-minutes: 180
         run: scripts/run_simulator_tests.sh build/simulator/Podot.app build/simulator-results
       - uses: actions/upload-artifact@v4
         if: always()

@@ -61,6 +61,33 @@ else
 fi
 rm -rf "$WORK"
 
+# --- Same scenario with a real renderer (OpenGL ES 3 / Compatibility on Mesa) and display server ---
+if command -v xvfb-run >/dev/null; then
+	WORK="$(mktemp -d)"
+	cp -R "$ROOT/tests/projects/e2e" "$WORK/e2e"
+	XVFB=(xvfb-run -a -s "-screen 0 1640x1180x24")
+	timeout 900 "${XVFB[@]}" "$GODOT_BIN" --editor --rendering-driver opengl3 --path "$WORK/e2e" --import > "$RESULTS/e2e_gl_import.log" 2>&1
+	mkdir -p "$WORK/e2e/.test_results" && touch "$WORK/e2e/.test_results/PODOT_E2E"
+	GODOT_IN_PROCESS_INSTANCES=1 timeout 1800 "${XVFB[@]}" "$GODOT_BIN" --editor --rendering-driver opengl3 --path "$WORK/e2e" > "$RESULTS/e2e_gl.log" 2>&1
+	CODE=$?
+	cp -R "$WORK/e2e/.test_results" "$RESULTS/e2e_gl_results" 2>/dev/null
+	J="$WORK/e2e/.test_results/editor.json"
+	if [ -f "$J" ] && python3 -c "import json,sys; sys.exit(0 if json.load(open('$J'))['done'] else 1)"; then
+		python3 - "$J" <<'PY' | tee -a "$SUMMARY"
+import json, sys
+d = json.load(open(sys.argv[1]))
+for name, c in sorted(d["checks"].items()):
+    print(("PASS" if c["ok"] else "FAIL"), "e2e_gl:" + name, c["detail"][:160].replace("\n", " "))
+PY
+		result PASS e2e_gl_in_process_exit "exit code $CODE ($(python3 -c "import json; d=json.load(open('$J')); print(d['renderer'], d['display'])"))"
+	else
+		result FAIL e2e_gl_in_process "exit code $CODE, see e2e_gl.log"
+	fi
+	rm -rf "$WORK"
+else
+	result SKIP e2e_gl "xvfb-run not installed"
+fi
+
 echo "---- Summary ----"
 cat "$SUMMARY"
 ! grep -q "^FAIL" "$SUMMARY"
