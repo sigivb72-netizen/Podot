@@ -1,0 +1,219 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sigivb72-netizen <vergilx63@gmail.com>
+Date: Sun, 8 Nov 2026 10:25:05 +0000
+Subject: [PATCH 4/4] podot: tests: unit tests for the iPadOS port's
+ platform-independent parts
+
+---
+ tests/podot/test_podot_ipados.cpp | 202 ++++++++++++++++++++++++++++++
+ 1 file changed, 202 insertions(+)
+ create mode 100644 tests/podot/test_podot_ipados.cpp
+
+diff --git a/tests/podot/test_podot_ipados.cpp b/tests/podot/test_podot_ipados.cpp
+new file mode 100644
+index 0000000..ecc92e3
+--- /dev/null
++++ b/tests/podot/test_podot_ipados.cpp
+@@ -0,0 +1,202 @@
++/**************************************************************************/
++/*  test_podot_ipados.cpp                                                 */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#include "tests/test_macros.h"
++
++TEST_FORCE_LINK(test_podot_ipados)
++
++#include "core/io/logger.h"
++#include "core/os/os.h"
++#include "core/string/string_name.h"
++
++#ifdef TOOLS_ENABLED
++#include "core/io/dir_access.h"
++#include "core/io/file_access.h"
++#include "editor/project_manager/project_device_limits.h"
++#endif
++
++// Tests for the platform-independent parts of the iPadOS editor port.
++namespace TestPodotIPadOS {
++
++TEST_CASE("[Podot][OS] In-process instance queue") {
++	OS *os = OS::get_singleton();
++	const bool was_enabled = os->is_in_process_instances_enabled();
++	os->clear_pending_in_process_instances();
++
++	os->set_in_process_instances_enabled(true);
++	CHECK(os->is_in_process_instances_enabled());
++	CHECK_FALSE(os->has_pending_in_process_instance());
++
++	List<String> game;
++	game.push_back("--path");
++	game.push_back("/projects/game");
++	List<String> editor;
++	editor.push_back("-e");
++
++	// create_instance() queues instead of spawning a process.
++	ProcessID pid = -1;
++	CHECK(os->create_instance(game, &pid) == OK);
++	CHECK(pid == 0);
++	os->queue_in_process_instance(editor);
++	CHECK(os->has_pending_in_process_instance());
++
++	List<String> first = os->pop_pending_in_process_instance();
++	REQUIRE(first.size() == 2);
++	CHECK(first.front()->get() == "--path");
++	CHECK(first.back()->get() == "/projects/game");
++	List<String> second = os->pop_pending_in_process_instance();
++	REQUIRE(second.size() == 1);
++	CHECK(second.front()->get() == "-e");
++	CHECK_FALSE(os->has_pending_in_process_instance());
++
++	// Front insertion.
++	os->queue_in_process_instance(game);
++	os->queue_in_process_instance(editor, true);
++	CHECK(os->pop_pending_in_process_instance().front()->get() == "-e");
++	os->clear_pending_in_process_instances();
++	CHECK_FALSE(os->has_pending_in_process_instance());
++
++	os->set_in_process_instances_enabled(was_enabled);
++}
++
++TEST_CASE("[Podot][OS] In-process session data") {
++	OS *os = OS::get_singleton();
++	os->set_in_process_session_value("podot_test_key", "value");
++	CHECK(os->get_in_process_session_value("podot_test_key") == "value");
++	CHECK(os->get_in_process_session_value("podot_missing", "default") == "default");
++	os->erase_in_process_session_value("podot_test_key");
++	CHECK(os->get_in_process_session_value("podot_test_key", "gone") == "gone");
++	const int generation = os->get_in_process_generation();
++	os->increment_in_process_generation();
++	CHECK(os->get_in_process_generation() == generation + 1);
++}
++
++class CountingLogger : public Logger {
++public:
++	static inline int alive = 0;
++	CountingLogger() { alive++; }
++	~CountingLogger() { alive--; }
++	virtual void logv(const char *p_format, va_list p_list, bool p_err) override {}
++};
++
++TEST_CASE("[Podot][Logger] CompositeLogger truncation keeps the platform loggers") {
++	Vector<Logger *> loggers;
++	loggers.push_back(memnew(CountingLogger));
++	CompositeLogger *composite = memnew(CompositeLogger(loggers));
++	composite->add_logger(memnew(CountingLogger));
++	composite->add_logger(memnew(CountingLogger));
++	CHECK(CountingLogger::alive == 3);
++	CHECK(composite->get_logger_count() == 3);
++	composite->truncate_loggers(1);
++	CHECK(composite->get_logger_count() == 1);
++	CHECK(CountingLogger::alive == 1);
++	memdelete(composite);
++	CHECK(CountingLogger::alive == 0);
++}
++
++TEST_CASE("[Podot][StringName] Static names flag") {
++	// Static StringNames (as created by SNAME()) are counted, which is what lets the table keep them
++	// alive when Main is cleaned up before an in-process relaunch.
++	static StringName static_name = StringName("podot_static_name_test", true);
++	StringName dynamic_name = StringName("podot_static_name_test");
++	CHECK(static_name == dynamic_name);
++	CHECK(static_name.operator String() == "podot_static_name_test");
++}
++
++#ifdef TOOLS_ENABLED
++TEST_CASE("[Podot][ProjectDeviceLimits] Warnings") {
++	ProjectDeviceLimits::ProjectStats stats;
++	ProjectDeviceLimits::DeviceInfo device;
++	device.physical_memory = 4ull * 1024 * 1024 * 1024; // iPad 10th generation.
++	device.free_storage = 20ull * 1024 * 1024 * 1024;
++
++	stats.source_bytes = 200 * 1024 * 1024;
++	stats.largest_file_bytes = 10 * 1024 * 1024;
++	stats.largest_file = "res://big.png";
++	CHECK(ProjectDeviceLimits::get_warning(stats, device).is_empty());
++
++	SUBCASE("Assets larger than the memory budget") {
++		stats.source_bytes = 3ull * 1024 * 1024 * 1024;
++		CHECK(ProjectDeviceLimits::get_warning(stats, device).contains("memory"));
++	}
++	SUBCASE("Single huge file") {
++		stats.largest_file_bytes = 1200ull * 1024 * 1024;
++		stats.largest_file = "/p/movie.ogv";
++		CHECK(ProjectDeviceLimits::get_warning(stats, device).contains("movie.ogv"));
++	}
++	SUBCASE("Not enough storage for the first import") {
++		device.free_storage = 100 * 1024 * 1024;
++		CHECK(ProjectDeviceLimits::get_warning(stats, device).contains("storage"));
++		stats.imported_bytes = stats.source_bytes; // Already imported: only the reserve is needed.
++		device.free_storage = 600 * 1024 * 1024;
++		CHECK(ProjectDeviceLimits::get_warning(stats, device).is_empty());
++	}
++	SUBCASE("Unknown device info never warns about memory or storage") {
++		stats.source_bytes = 100ull * 1024 * 1024 * 1024;
++		CHECK(ProjectDeviceLimits::get_warning(stats, ProjectDeviceLimits::DeviceInfo()).is_empty());
++	}
++}
++
++TEST_CASE("[Podot][ProjectDeviceLimits] Project scan") {
++	const String dir = OS::get_singleton()->get_cache_path().path_join("podot_scan_test");
++	Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
++	da->make_dir_recursive(dir.path_join(".godot/imported"));
++	da->make_dir_recursive(dir.path_join("assets"));
++	da->make_dir_recursive(dir.path_join(".git"));
++	auto write = [](const String &p_path, int p_size) {
++		Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::WRITE);
++		Vector<uint8_t> data;
++		data.resize(p_size);
++		data.fill(1);
++		f->store_buffer(data);
++	};
++	write(dir.path_join("project.godot"), 100);
++	write(dir.path_join("assets/a.png"), 5000);
++	write(dir.path_join(".godot/imported/a.ctex"), 3000);
++	write(dir.path_join(".git/ignored"), 99999);
++
++	const ProjectDeviceLimits::ProjectStats stats = ProjectDeviceLimits::scan_project(dir);
++	CHECK(stats.source_bytes == 5100);
++	CHECK(stats.imported_bytes == 3000);
++	CHECK(stats.file_count == 3);
++	CHECK(stats.largest_file.ends_with("a.png"));
++	CHECK_FALSE(stats.truncated);
++
++	// Cleanup.
++	for (const String &f : { String("project.godot"), String("assets/a.png"), String(".godot/imported/a.ctex"), String(".git/ignored") }) {
++		da->remove(dir.path_join(f));
++	}
++	for (const String &d : { String("assets"), String(".godot/imported"), String(".godot"), String(".git"), String() }) {
++		da->remove(dir.path_join(d));
++	}
++}
++#endif // TOOLS_ENABLED
++
++} // namespace TestPodotIPadOS

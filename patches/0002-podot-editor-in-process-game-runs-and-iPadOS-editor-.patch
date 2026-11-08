@@ -1,0 +1,1095 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sigivb72-netizen <vergilx63@gmail.com>
+Date: Sun, 8 Nov 2026 10:25:04 +0000
+Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
+ adaptations
+
+- EditorRun/EditorNode: when instances run in-process, the editor saves,
+  shuts down, the game runs in the same process, and the editor reopens
+  (with the same scenes) and shows the game output in the Output dock.
+- Reuse the Android mobile-editor adaptations on Apple embedded platforms
+  (touch actions panel, virtual keyboard spacer in the script editor, no
+  external file manager/terminal/FBX2glTF, Game tab without embedding,
+  Mobile renderer by default, compact main menu).
+- Save on focus loss by default on iPadOS (apps can be killed anytime).
+- Use the system document picker for opening files/folders from the
+  filesystem on iPadOS (reaches iCloud Drive, external drives, ...).
+- Project manager: warn before opening a project that likely exceeds the
+  device memory or free storage (ProjectDeviceLimits).
+- Handle low-memory warnings: drop cached previews and warn the user.
+- Apple hardware keyboards use the macOS key conventions (Cmd/Option).
+---
+ core/input/input_map.cpp                      |  12 +-
+ core/os/keyboard.cpp                          |   2 +-
+ .../asset_library_editor_plugin.cpp           |   2 +-
+ editor/docks/filesystem_dock.cpp              |   6 +-
+ editor/editor_node.cpp                        | 159 ++++++++++++++++--
+ editor/editor_node.h                          |  11 +-
+ editor/gui/editor_file_dialog.cpp             |  10 +-
+ editor/inspector/editor_resource_preview.cpp  |   7 +
+ editor/inspector/editor_resource_preview.h    |   4 +
+ .../project_manager/project_device_limits.cpp | 144 ++++++++++++++++
+ .../project_manager/project_device_limits.h   |  60 +++++++
+ editor/project_manager/project_manager.cpp    |  32 +++-
+ editor/project_manager/project_manager.h      |   3 +
+ editor/run/editor_run.cpp                     |  18 ++
+ editor/run/game_view_plugin.cpp               |  12 +-
+ editor/run/game_view_plugin.h                 |   8 +-
+ editor/script/script_editor_plugin.cpp        |   6 +-
+ editor/script/script_editor_plugin.h          |   2 +-
+ editor/script/script_text_editor.cpp          |   2 +-
+ editor/settings/editor_settings.cpp           |  31 +++-
+ scene/gui/file_dialog.cpp                     |   5 +-
+ 21 files changed, 492 insertions(+), 44 deletions(-)
+ create mode 100644 editor/project_manager/project_device_limits.cpp
+ create mode 100644 editor/project_manager/project_device_limits.h
+
+diff --git a/core/input/input_map.cpp b/core/input/input_map.cpp
+index d18a781..201483e 100644
+--- a/core/input/input_map.cpp
++++ b/core/input/input_map.cpp
+@@ -883,6 +883,14 @@ const HashMap<String, List<Ref<InputEvent>>> &InputMap::get_builtins() {
+ 	return default_builtin_cache;
+ }
+ 
++// Apple devices with a hardware keyboard (iPadOS) use the macOS key conventions (Command/Option).
++static bool _is_override_supported(const String &p_feature) {
++	if (OS::get_singleton()->has_feature(p_feature)) {
++		return true;
++	}
++	return p_feature == "macos" && OS::prefer_meta_over_ctrl();
++}
++
+ const HashMap<String, List<Ref<InputEvent>>> &InputMap::get_builtins_with_feature_overrides_applied() {
+ 	if (default_builtin_with_overrides_cache.size() > 0) {
+ 		return default_builtin_with_overrides_cache;
+@@ -900,7 +908,7 @@ const HashMap<String, List<Ref<InputEvent>>> &InputMap::get_builtins_with_featur
+ 		const String &name = fullname.get_slicec('.', 0);
+ 		String override_for = fullname.get_slice_count(".") > 1 ? fullname.get_slicec('.', 1) : String();
+ 
+-		if (!override_for.is_empty() && OS::get_singleton()->has_feature(override_for)) {
++		if (!override_for.is_empty() && _is_override_supported(override_for)) {
+ 			builtins_with_overrides[name].push_back(override_for);
+ 		}
+ 	}
+@@ -916,7 +924,7 @@ const HashMap<String, List<Ref<InputEvent>>> &InputMap::get_builtins_with_featur
+ 			continue;
+ 		}
+ 
+-		if (!override_for.is_empty() && !OS::get_singleton()->has_feature(override_for)) {
++		if (!override_for.is_empty() && !_is_override_supported(override_for)) {
+ 			// OS does not support this override - skip.
+ 			continue;
+ 		}
+diff --git a/core/os/keyboard.cpp b/core/os/keyboard.cpp
+index 87bb296..2c514c1 100644
+--- a/core/os/keyboard.cpp
++++ b/core/os/keyboard.cpp
+@@ -62,7 +62,7 @@ static const _KeyCodeText _keycodes[] = {
+ 	{Key::PAGEDOWN              ,"PageDown"},
+ 	{Key::SHIFT                 ,"Shift"},
+ 	{Key::CTRL                  ,"Ctrl"},
+-#if defined(MACOS_ENABLED)
++#if defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 	{Key::META                  ,"Command"},
+ 	{Key::CMD_OR_CTRL           ,"Command"},
+ 	{Key::ALT                   ,"Option"},
+diff --git a/editor/asset_library/asset_library_editor_plugin.cpp b/editor/asset_library/asset_library_editor_plugin.cpp
+index 5579f77..d1e9733 100644
+--- a/editor/asset_library/asset_library_editor_plugin.cpp
++++ b/editor/asset_library/asset_library_editor_plugin.cpp
+@@ -1055,7 +1055,7 @@ void EditorAssetLibrary::_notification(int p_what) {
+ 
+ 		case NOTIFICATION_VISIBILITY_CHANGED: {
+ 			if (is_visible()) {
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 				// Focus the search box automatically when switching to the Templates tab (in the Project Manager)
+ 				// or switching to the AssetLib tab (in the editor).
+ 				// The Project Manager's project filter box is automatically focused in the project manager code.
+diff --git a/editor/docks/filesystem_dock.cpp b/editor/docks/filesystem_dock.cpp
+index 232fc24..e406526 100644
+--- a/editor/docks/filesystem_dock.cpp
++++ b/editor/docks/filesystem_dock.cpp
+@@ -3650,7 +3650,7 @@ void FileSystemDock::_file_and_folders_fill_popup(PopupMenu *p_popup, const Vect
+ 			}
+ 		}
+ 
+-#if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
++#if !defined(ANDROID_ENABLED) && !defined(APPLE_EMBEDDED_ENABLED) && !defined(WEB_ENABLED)
+ 		if (!added_separator) {
+ 			p_popup->add_separator();
+ 			added_separator = true;
+@@ -3717,7 +3717,7 @@ void FileSystemDock::_tree_empty_click(const Vector2 &p_pos, MouseButton p_butto
+ 
+ 	// To keep consistency with options added to "Create New..." menu (for plugin which has slot as CONTEXT_SLOT_FILESYSTEM_CREATE).
+ 	EditorContextMenuPluginManager::get_singleton()->add_options_from_plugins(tree_popup, EditorContextMenuPlugin::CONTEXT_SLOT_FILESYSTEM_CREATE, Vector<String>(), 500);
+-#if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
++#if !defined(ANDROID_ENABLED) && !defined(APPLE_EMBEDDED_ENABLED) && !defined(WEB_ENABLED)
+ 	// Opening the system file manager is not supported on the Android and web editors.
+ 	tree_popup->add_separator();
+ 	tree_popup->add_icon_shortcut(get_editor_theme_icon(SNAME("Terminal")), ED_GET_SHORTCUT("filesystem_dock/open_in_terminal"), FILE_MENU_OPEN_IN_TERMINAL);
+@@ -4448,7 +4448,7 @@ FileSystemDock::FileSystemDock() {
+ 	ED_SHORTCUT("filesystem_dock/new_textfile", TTRC("New TextFile..."), Key::NONE);
+ 	ED_SHORTCUT("filesystem_dock/rename", TTRC("Rename..."), Key::F2);
+ 	ED_SHORTCUT_OVERRIDE("filesystem_dock/rename", "macos", Key::ENTER);
+-#if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
++#if !defined(ANDROID_ENABLED) && !defined(APPLE_EMBEDDED_ENABLED) && !defined(WEB_ENABLED)
+ 	// Opening the system file manager or opening in an external program is not supported on the Android and web editors.
+ 	ED_SHORTCUT("filesystem_dock/show_in_explorer", TTRC("Open in File Manager"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::R);
+ 	ED_SHORTCUT("filesystem_dock/open_in_external_program", TTRC("Open in External Program"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::E);
+diff --git a/editor/editor_node.cpp b/editor/editor_node.cpp
+index 5bc4649..bcd3444 100644
+--- a/editor/editor_node.cpp
++++ b/editor/editor_node.cpp
+@@ -201,7 +201,7 @@
+ #include "servers/physics_3d/physics_server_3d.h"
+ #endif // PHYSICS_3D_DISABLED
+ 
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ #include "editor/gui/touch_actions_panel.h"
+ #endif // ANDROID_ENABLED
+ 
+@@ -1043,9 +1043,26 @@ void EditorNode::_notification(int p_what) {
+ 				EditorToaster::get_singleton()->popup_str(TTR("Recovery Mode is enabled. Editor functionality has been restricted."), EditorToaster::SEVERITY_WARNING);
+ 			}
+ 
++			if (OS::get_singleton()->is_in_process_instances_enabled()) {
++				// Returning from a game that was run in-process: show its output.
++				_show_in_process_game_session_results();
++			}
++
+ 			/* DO NOT LOAD SCENES HERE, WAIT FOR FILE SCANNING AND REIMPORT TO COMPLETE */
+ 		} break;
+ 
++		case NOTIFICATION_OS_MEMORY_WARNING: {
++			// Sent by mobile OSes before they terminate the app for using too much memory.
++			const int released = EditorResourcePreview::get_singleton()->clear_memory_cache();
++			const uint64_t now = OS::get_singleton()->get_ticks_msec();
++			if (last_memory_warning_msec == 0 || now - last_memory_warning_msec > 30000) {
++				last_memory_warning_msec = now;
++				const Dictionary mem = OS::get_singleton()->get_memory_info();
++				WARN_PRINT(vformat("The system reported low memory (released %d cached previews; %s of memory available). Save your work; the editor may be terminated if memory usage keeps growing.", released, String::humanize_size(MAX(0, (int64_t)mem.get("available", 0)))));
++				EditorToaster::get_singleton()->popup_str(TTR("The device is running low on memory. Save your work, and close unused scenes or reduce the size of imported assets."), EditorToaster::SEVERITY_WARNING);
++			}
++		} break;
++
+ 		case NOTIFICATION_APPLICATION_FOCUS_IN: {
+ 			// Restore the original FPS cap after focusing back on the editor.
+ 			OS::get_singleton()->set_low_processor_usage_mode_sleep_usec(int(EDITOR_GET("interface/editor/timers/low_processor_mode_sleep_usec")));
+@@ -1170,7 +1187,7 @@ void EditorNode::_notification(int p_what) {
+ 				EditorHelpHighlighter::get_singleton()->reset_cache();
+ 			}
+ #endif
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 			if (EditorSettings::get_singleton()->check_changed_settings_in_group("interface/touchscreen/touch_actions_panel")) {
+ 				_touch_actions_panel_mode_changed();
+ 			}
+@@ -3871,7 +3888,7 @@ void EditorNode::_menu_option_confirm(int p_option, bool p_confirmed) {
+ 			export_template_manager->popup_manager();
+ 		} break;
+ 		case EDITOR_CONFIGURE_FBX_IMPORTER: {
+-#if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
++#if !defined(ANDROID_ENABLED) && !defined(APPLE_EMBEDDED_ENABLED) && !defined(WEB_ENABLED)
+ 			fbx_importer_manager->show_dialog();
+ #endif
+ 		} break;
+@@ -6784,6 +6801,128 @@ void EditorNode::_restart_editor(bool p_goto_project_manager) {
+ 	OS::get_singleton()->set_restart_on_exit(true, args);
+ }
+ 
++Error EditorNode::run_game_in_process(const List<String> &p_game_args, const String &p_running_scene) {
++	ERR_FAIL_COND_V(!OS::get_singleton()->is_in_process_instances_enabled(), ERR_UNAVAILABLE);
++	ERR_FAIL_COND_V_MSG(exiting, ERR_BUSY, "The editor is already shutting down.");
++
++	const String log_path = EditorPaths::get_singleton()->get_cache_dir().path_join("in_process_game.log");
++	{
++		// Start from an empty log, so that stale output from a previous run is never shown.
++		Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
++		if (da->file_exists(log_path)) {
++			da->remove(log_path);
++		}
++	}
++
++	List<String> game_args;
++	for (List<String>::ConstIterator itr = p_game_args.begin(); itr != p_game_args.end(); ++itr) {
++		const String &arg = *itr;
++		// The editor (and thus its debugger server) is not running while the game runs, so don't
++		// make the game wait for a debugger connection or watch the editor process.
++		if (arg == "--remote-debug" || arg == "--editor-pid" || arg == "--log-file") {
++			++itr;
++			if (itr == p_game_args.end()) {
++				break;
++			}
++			continue;
++		}
++		game_args.push_back(arg);
++	}
++	game_args.push_back("--log-file");
++	game_args.push_back(log_path);
++
++	List<String> editor_args;
++	for (const String &a : Main::get_forwardable_cli_arguments(Main::CLI_SCOPE_TOOL)) {
++		editor_args.push_back(a);
++	}
++	editor_args.push_back("--path");
++	editor_args.push_back(ProjectSettings::get_singleton()->get_resource_path());
++	editor_args.push_back("-e");
++	if (get_tree()->get_edited_scene_root() && !get_tree()->get_edited_scene_root()->get_scene_file_path().is_empty()) {
++		editor_args.push_back(get_tree()->get_edited_scene_root()->get_scene_file_path());
++	}
++
++	OS *os = OS::get_singleton();
++	os->set_in_process_session_value("game_running", "1");
++	os->set_in_process_session_value("game_log", log_path);
++	os->set_in_process_session_value("game_scene", p_running_scene);
++	os->set_in_process_session_value("game_project", ProjectSettings::get_singleton()->get_resource_path());
++	os->set_in_process_session_value("game_start_ticks", itos(os->get_ticks_msec()));
++
++	os->clear_pending_in_process_instances();
++	os->queue_in_process_instance(game_args);
++	os->queue_in_process_instance(editor_args);
++
++	print_line(vformat("Running the project in-process: the editor will close and reopen when the game quits (log: %s).", log_path));
++
++	exiting = true;
++	_exit_editor(EXIT_SUCCESS);
++	return OK;
++}
++
++void EditorNode::_show_in_process_game_session_results() {
++	OS *os = OS::get_singleton();
++	const String log_path = os->get_in_process_session_value("game_log");
++	if (log_path.is_empty()) {
++		return;
++	}
++	const String scene = os->get_in_process_session_value("game_scene");
++	const String exit_code = os->get_in_process_session_value("game_exit_code", "0");
++	const uint64_t start_ticks = os->get_in_process_session_value("game_start_ticks", "0").to_int();
++	const uint64_t end_ticks = os->get_in_process_session_value("game_end_ticks", "0").to_int();
++	os->erase_in_process_session_value("game_running");
++	os->erase_in_process_session_value("game_log");
++	os->erase_in_process_session_value("game_scene");
++	os->erase_in_process_session_value("game_exit_code");
++	os->erase_in_process_session_value("game_start_ticks");
++	os->erase_in_process_session_value("game_end_ticks");
++
++	String header = vformat(TTR("--- Game session finished (exit code %s"), exit_code);
++	if (end_ticks > start_ticks) {
++		header += vformat(TTR(", ran for %.1f s"), (end_ticks - start_ticks) / 1000.0);
++	}
++	header += ")";
++	if (!scene.is_empty()) {
++		header += " " + vformat(TTR("Scene: %s"), scene);
++	}
++	header += " ---";
++	print_line(header);
++
++	// Set by the platform when the game did not quit normally (e.g. iPadOS terminated the app).
++	const String termination_message = os->get_in_process_session_value("game_termination_message");
++	if (!termination_message.is_empty()) {
++		os->erase_in_process_session_value("game_termination_message");
++		log->add_message(termination_message, EditorLog::MSG_TYPE_ERROR);
++		EditorToaster::get_singleton()->popup_str(termination_message, EditorToaster::SEVERITY_ERROR);
++	}
++
++	Ref<FileAccess> f = FileAccess::open(log_path, FileAccess::READ);
++	if (f.is_null()) {
++		log->add_message(TTR("The game did not produce a log file."), EditorLog::MSG_TYPE_WARNING);
++		return;
++	}
++	int error_count = 0;
++	int warning_count = 0;
++	while (!f->eof_reached()) {
++		const String line = f->get_line();
++		if (line.is_empty() && f->eof_reached()) {
++			break;
++		}
++		const String stripped = line.strip_edges();
++		EditorLog::MessageType type = EditorLog::MSG_TYPE_STD;
++		if (stripped.begins_with("ERROR:") || stripped.begins_with("SCRIPT ERROR:") || stripped.begins_with("USER ERROR:") || stripped.begins_with("SHADER ERROR:")) {
++			type = EditorLog::MSG_TYPE_ERROR;
++			error_count++;
++		} else if (stripped.begins_with("WARNING:") || stripped.begins_with("USER WARNING:") || stripped.begins_with("SCRIPT WARNING:")) {
++			type = EditorLog::MSG_TYPE_WARNING;
++			warning_count++;
++		}
++		log->add_message(line, type);
++	}
++	log->add_message(vformat(TTR("--- End of game output (%d errors, %d warnings) ---"), error_count, warning_count), EditorLog::MSG_TYPE_EDITOR);
++	editor_dock_manager->open_dock(log, true);
++}
++
+ void EditorNode::_scene_tab_closed(int p_tab) {
+ 	current_menu_option = SCENE_TAB_CLOSE;
+ 	tab_closing_idx = p_tab;
+@@ -8075,7 +8214,7 @@ void EditorNode::_build_project_menu() {
+ 	project_menu->add_shortcut(ED_GET_SHORTCUT("editor/export"), PROJECT_EXPORT);
+ 	project_menu->add_item(TTRC("Pack Project as ZIP..."), PROJECT_PACK_AS_ZIP);
+ 	project_menu->add_item(TTRC("Install Android Build Template..."), PROJECT_INSTALL_ANDROID_SOURCE);
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 	project_menu->add_item(TTRC("Open User Data Folder"), PROJECT_OPEN_USER_DATA_FOLDER);
+ #endif
+ 	project_menu->add_separator();
+@@ -8126,7 +8265,7 @@ void EditorNode::_build_settings_menu() {
+ 	settings_menu->add_shortcut(ED_GET_SHORTCUT("editor/fullscreen_mode"), EDITOR_TOGGLE_FULLSCREEN);
+ 	settings_menu->add_separator();
+ 
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 	if (EditorPaths::get_singleton()->get_data_dir() == EditorPaths::get_singleton()->get_config_dir()) {
+ 		// Configuration and data folders are located in the same place.
+ 		settings_menu->add_item(TTRC("Open Editor Data/Settings Folder"), EDITOR_OPEN_DATA_FOLDER);
+@@ -8140,7 +8279,7 @@ void EditorNode::_build_settings_menu() {
+ 
+ 	settings_menu->add_item(TTRC("Manage Editor Features..."), EDITOR_MANAGE_FEATURE_PROFILES);
+ 	settings_menu->add_item(TTRC("Manage Export Templates..."), EDITOR_MANAGE_EXPORT_TEMPLATES);
+-#if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
++#if !defined(ANDROID_ENABLED) && !defined(APPLE_EMBEDDED_ENABLED) && !defined(WEB_ENABLED)
+ 	settings_menu->add_item(TTRC("Configure FBX Importer..."), EDITOR_CONFIGURE_FBX_IMPORTER);
+ #endif
+ }
+@@ -8250,7 +8389,7 @@ void EditorNode::_update_main_menu_type() {
+ 			}
+ 		}
+ 
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 		// Align main menu icon visually with TouchActionsPanel buttons.
+ 		menu_btn_spacer = memnew(Control);
+ 		menu_btn_spacer->set_custom_minimum_size(Vector2(8, 0) * EDSCALE);
+@@ -8292,7 +8431,7 @@ void EditorNode::_bottom_panel_resized() {
+ 	bottom_panel->set_bottom_panel_offset(center_split->get_split_offset());
+ }
+ 
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ void EditorNode::_touch_actions_panel_mode_changed() {
+ 	int panel_mode = EDITOR_GET("interface/touchscreen/touch_actions_panel");
+ 	switch (panel_mode) {
+@@ -8672,7 +8811,7 @@ EditorNode::EditorNode() {
+ 
+ 	main_vbox = memnew(VBoxContainer);
+ 
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 	base_vbox = memnew(VBoxContainer);
+ 	base_vbox->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT, Control::PRESET_MODE_MINSIZE, theme->get_constant(SNAME("window_border_margin"), EditorStringName(Editor)));
+ 
+@@ -8916,7 +9055,7 @@ EditorNode::EditorNode() {
+ 	gui_base->add_child(about);
+ 	feature_profile_manager->connect("current_feature_profile_changed", callable_mp(this, &EditorNode::_feature_profile_changed));
+ 
+-#if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
++#if !defined(ANDROID_ENABLED) && !defined(APPLE_EMBEDDED_ENABLED) && !defined(WEB_ENABLED)
+ 	fbx_importer_manager = memnew(FBXImporterManager);
+ 	gui_base->add_child(fbx_importer_manager);
+ #endif
+diff --git a/editor/editor_node.h b/editor/editor_node.h
+index f683e13..1eca773 100644
+--- a/editor/editor_node.h
++++ b/editor/editor_node.h
+@@ -104,7 +104,7 @@ class ProjectSettingsEditor;
+ class SceneImportSettingsDialog;
+ class ProjectUpgradeTool;
+ 
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ class TouchActionsPanel;
+ #endif
+ 
+@@ -291,7 +291,7 @@ private:
+ 	VBoxContainer *main_vbox = nullptr;
+ 	OptionButton *renderer = nullptr;
+ 
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 	VBoxContainer *base_vbox = nullptr; // It only contains the title_bar and main_hbox.
+ 	HBoxContainer *main_hbox = nullptr; // It only contains the touch_actions_panel and main_vbox.
+ 	TouchActionsPanel *touch_actions_panel = nullptr;
+@@ -1020,6 +1020,13 @@ public:
+ 	void save_before_run();
+ 	void try_autosave();
+ 	void restart_editor(bool p_goto_project_manager = false);
++	uint64_t last_memory_warning_msec = 0;
++
++	// In-process game execution, used when the platform cannot spawn processes (iPadOS editor):
++	// the editor shuts down, the game runs in the same process, and the editor is set up again when
++	// the game quits. See OS::is_in_process_instances_enabled().
++	Error run_game_in_process(const List<String> &p_game_args, const String &p_running_scene);
++	void _show_in_process_game_session_results();
+ 	void unload_editor_addons();
+ 
+ 	void open_setting_override(const String &p_property);
+diff --git a/editor/gui/editor_file_dialog.cpp b/editor/gui/editor_file_dialog.cpp
+index ef7927d..746cec8 100644
+--- a/editor/gui/editor_file_dialog.cpp
++++ b/editor/gui/editor_file_dialog.cpp
+@@ -67,7 +67,15 @@ void EditorFileDialog::_item_menu_id_pressed(int p_option) {
+ }
+ 
+ bool EditorFileDialog::_should_use_native_popup() const {
+-#ifdef ANDROID_ENABLED
++#if defined(APPLE_EMBEDDED_ENABLED)
++	// On iPadOS, the system document picker is the only way to reach folders and files outside of the
++	// app sandbox (iCloud Drive, external drives, other apps). It returns real filesystem paths, but it
++	// can only open existing items, so it's only used for opening files/folders on the filesystem.
++	if (get_access() != ACCESS_FILESYSTEM || get_file_mode() == FILE_MODE_SAVE_FILE) {
++		return false;
++	}
++	return _can_use_native_popup() && EDITOR_GET("interface/editor/appearance/use_native_file_dialogs").operator bool();
++#elif defined(ANDROID_ENABLED)
+ 	// Native file dialog on Android, returns a file URI instead of a path and does not support res://, user://, or options. This requires editor-side changes to handle properly, so disabling it for now.
+ 	return false;
+ #else
+diff --git a/editor/inspector/editor_resource_preview.cpp b/editor/inspector/editor_resource_preview.cpp
+index 1673636..db4d0d7 100644
+--- a/editor/inspector/editor_resource_preview.cpp
++++ b/editor/inspector/editor_resource_preview.cpp
+@@ -528,6 +528,13 @@ void EditorResourcePreview::queue_resource_preview(const String &p_path, const C
+ 	preview_sem.post();
+ }
+ 
++int EditorResourcePreview::clear_memory_cache() {
++	MutexLock lock(preview_mutex);
++	const int count = cache.size();
++	cache.clear();
++	return count;
++}
++
+ void EditorResourcePreview::add_preview_generator(const Ref<EditorResourcePreviewGenerator> &p_generator) {
+ 	preview_generators.push_back(p_generator);
+ }
+diff --git a/editor/inspector/editor_resource_preview.h b/editor/inspector/editor_resource_preview.h
+index cb2be1d..7ab3d00 100644
+--- a/editor/inspector/editor_resource_preview.h
++++ b/editor/inspector/editor_resource_preview.h
+@@ -141,6 +141,10 @@ public:
+ 
+ 	PreviewItem get_resource_preview_if_available(const String &p_path);
+ 
++	// Drops the in-memory thumbnail cache (thumbnails are regenerated from the disk cache when needed).
++	// Returns the number of entries released. Used when the OS reports low memory.
++	int clear_memory_cache();
++
+ 	void add_preview_generator(const Ref<EditorResourcePreviewGenerator> &p_generator);
+ 	void remove_preview_generator(const Ref<EditorResourcePreviewGenerator> &p_generator);
+ 	void check_for_invalidation(const String &p_path);
+diff --git a/editor/project_manager/project_device_limits.cpp b/editor/project_manager/project_device_limits.cpp
+new file mode 100644
+index 0000000..c2e846b
+--- /dev/null
++++ b/editor/project_manager/project_device_limits.cpp
+@@ -0,0 +1,144 @@
++/**************************************************************************/
++/*  project_device_limits.cpp                                             */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#include "project_device_limits.h"
++
++#include "core/io/dir_access.h"
++#include "core/io/file_access.h"
++#include "core/os/os.h"
++
++static void _scan_dir(Ref<DirAccess> &p_da, const String &p_dir, bool p_is_import_cache, ProjectDeviceLimits::ProjectStats &r_stats) {
++	if (r_stats.file_count >= ProjectDeviceLimits::MAX_SCANNED_FILES) {
++		r_stats.truncated = true;
++		return;
++	}
++	if (p_da->change_dir(p_dir) != OK) {
++		return;
++	}
++	Vector<String> subdirs;
++	p_da->list_dir_begin();
++	String name = p_da->get_next();
++	while (!name.is_empty()) {
++		if (name == "." || name == "..") {
++			name = p_da->get_next();
++			continue;
++		}
++		const String path = p_dir.path_join(name);
++		if (p_da->current_is_dir()) {
++			if (!p_is_import_cache && name == ".godot") {
++				const String imported = path.path_join("imported");
++				if (DirAccess::dir_exists_absolute(imported)) {
++					subdirs.push_back("|" + imported); // Marked as import cache.
++				}
++			} else if (p_is_import_cache || !name.begins_with(".")) {
++				subdirs.push_back((p_is_import_cache ? "|" : "") + path);
++			}
++		} else {
++			const int64_t file_size = FileAccess::get_size(path);
++			const uint64_t size = file_size > 0 ? file_size : 0;
++			r_stats.file_count++;
++			if (p_is_import_cache) {
++				r_stats.imported_bytes += size;
++			} else {
++				r_stats.source_bytes += size;
++				if (size > r_stats.largest_file_bytes) {
++					r_stats.largest_file_bytes = size;
++					r_stats.largest_file = path;
++				}
++			}
++			if (r_stats.file_count >= ProjectDeviceLimits::MAX_SCANNED_FILES) {
++				r_stats.truncated = true;
++				break;
++			}
++		}
++		name = p_da->get_next();
++	}
++	p_da->list_dir_end();
++
++	for (const String &subdir : subdirs) {
++		const bool import_cache = subdir.begins_with("|");
++		_scan_dir(p_da, import_cache ? subdir.substr(1) : subdir, import_cache, r_stats);
++	}
++}
++
++ProjectDeviceLimits::ProjectStats ProjectDeviceLimits::scan_project(const String &p_project_path) {
++	ProjectStats stats;
++	Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
++	_scan_dir(da, p_project_path, false, stats);
++	return stats;
++}
++
++ProjectDeviceLimits::DeviceInfo ProjectDeviceLimits::get_device_info(const String &p_project_path) {
++	DeviceInfo info;
++	const Dictionary mem = OS::get_singleton()->get_memory_info();
++	const int64_t physical = mem.get("physical", -1);
++	info.physical_memory = physical > 0 ? physical : 0;
++	Ref<DirAccess> da = DirAccess::open(p_project_path);
++	if (da.is_valid()) {
++		info.free_storage = da->get_space_left();
++	}
++	return info;
++}
++
++String ProjectDeviceLimits::get_warning(const ProjectStats &p_stats, const DeviceInfo &p_device) {
++	PackedStringArray problems;
++
++	if (p_device.physical_memory > 0) {
++		// Imported assets are loaded into RAM (and VRAM, which is shared on mobile devices). Projects
++		// whose assets alone exceed ~60% of the memory are very likely to be killed by the OS.
++		const uint64_t memory_budget = p_device.physical_memory * 6 / 10;
++		const uint64_t asset_bytes = MAX(p_stats.source_bytes, p_stats.imported_bytes);
++		if (asset_bytes > memory_budget) {
++			problems.push_back(vformat(TTR("The project contains %s of assets, but this device only has %s of memory. The editor will likely run out of memory and be terminated by the system while importing or editing it."), String::humanize_size(asset_bytes), String::humanize_size(p_device.physical_memory)));
++		}
++		// A single huge file (e.g. a 3D model or video) must be loaded at once.
++		if (p_stats.largest_file_bytes > p_device.physical_memory / 4) {
++			problems.push_back(vformat(TTR("The file \"%s\" is %s. Importing it may exhaust the memory of this device."), p_stats.largest_file.get_file(), String::humanize_size(p_stats.largest_file_bytes)));
++		}
++	}
++
++	if (p_device.free_storage > 0) {
++		// The first import of a project typically needs about as much space again as its assets.
++		const uint64_t reserve = 512 * 1024 * 1024;
++		const uint64_t needed = p_stats.imported_bytes > 0 ? reserve : p_stats.source_bytes + reserve;
++		if (p_device.free_storage < needed) {
++			problems.push_back(vformat(TTR("Only %s of storage is free. Importing this project needs about %s; imports and saves may fail."), String::humanize_size(p_device.free_storage), String::humanize_size(needed)));
++		}
++	}
++
++	if (p_stats.truncated) {
++		problems.push_back(vformat(TTR("The project contains more than %d files. Scanning it may take a long time and use a lot of memory."), MAX_SCANNED_FILES));
++	}
++
++	if (problems.is_empty()) {
++		return String();
++	}
++	return "- " + String("\n- ").join(problems);
++}
+diff --git a/editor/project_manager/project_device_limits.h b/editor/project_manager/project_device_limits.h
+new file mode 100644
+index 0000000..0030e58
+--- /dev/null
++++ b/editor/project_manager/project_device_limits.h
+@@ -0,0 +1,60 @@
++/**************************************************************************/
++/*  project_device_limits.h                                               */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#pragma once
++
++#include "core/string/ustring.h"
++
++// Estimates whether a project fits the resources of the current device (RAM, free storage) before
++// it is opened. Mostly relevant on memory-constrained devices such as tablets (e.g. a 4 GB iPad),
++// where opening a huge project would otherwise get the app terminated by the OS without any message.
++struct ProjectDeviceLimits {
++	struct ProjectStats {
++		uint64_t source_bytes = 0; // Project files, excluding the import cache and hidden folders.
++		uint64_t imported_bytes = 0; // `.godot/imported` (already imported assets).
++		uint64_t largest_file_bytes = 0;
++		String largest_file;
++		int file_count = 0;
++		bool truncated = false; // The scan stopped early (too many files).
++	};
++
++	struct DeviceInfo {
++		uint64_t physical_memory = 0; // 0 if unknown.
++		uint64_t free_storage = 0; // 0 if unknown.
++	};
++
++	static constexpr int MAX_SCANNED_FILES = 100000;
++
++	static ProjectStats scan_project(const String &p_project_path);
++	static DeviceInfo get_device_info(const String &p_project_path);
++
++	// Returns an empty string if the project is expected to fit, or a user-facing explanation.
++	static String get_warning(const ProjectStats &p_stats, const DeviceInfo &p_device);
++};
+diff --git a/editor/project_manager/project_manager.cpp b/editor/project_manager/project_manager.cpp
+index 19cf085..8e36926 100644
+--- a/editor/project_manager/project_manager.cpp
++++ b/editor/project_manager/project_manager.cpp
+@@ -50,6 +50,7 @@
+ #include "editor/inspector/editor_inspector.h"
+ #include "editor/project_manager/engine_update_label.h"
+ #include "editor/project_manager/project_dialog.h"
++#include "editor/project_manager/project_device_limits.h"
+ #include "editor/project_manager/project_list.h"
+ #include "editor/project_manager/project_tag.h"
+ #include "editor/project_manager/quick_settings_dialog.h"
+@@ -376,7 +377,7 @@ void ProjectManager::_select_main_view(int p_id) {
+ 	main_view_toggle_map[current_main_view]->set_pressed_no_signal(true);
+ 	main_view_map[current_main_view]->set_visible(true);
+ 
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 	if (current_main_view == MAIN_VIEW_PROJECTS && search_box->is_inside_tree()) {
+ 		// Automatically grab focus when the user moves from the Templates tab
+ 		// back to the Projects tab.
+@@ -559,12 +560,32 @@ void ProjectManager::_run_project_confirm() {
+ 	}
+ }
+ 
++void ProjectManager::_open_selected_projects_after_device_check() {
++	device_limits_confirmed = true;
++	_open_selected_projects();
++}
++
+ void ProjectManager::_open_selected_projects() {
++	const HashSet<String> &selected_list = project_list->get_selected_project_keys();
++
++	// Warn before opening a project that likely exceeds the capabilities of this device.
++	if (!device_limits_confirmed && selected_list.size() == 1) {
++		const String path = *selected_list.begin();
++		const ProjectDeviceLimits::ProjectStats stats = ProjectDeviceLimits::scan_project(path);
++		const String warning = ProjectDeviceLimits::get_warning(stats, ProjectDeviceLimits::get_device_info(path));
++		if (!warning.is_empty()) {
++			print_line(vformat("Device limits warning for project \"%s\":\n%s", path, warning));
++			device_limits_ask->set_text(vformat(TTR("This project may exceed the capabilities of this device:\n\n%s\n\nOpen it anyway?"), warning));
++			device_limits_ask->popup_centered(Size2i(500.0 * EDSCALE, 0));
++			return;
++		}
++	}
++	device_limits_confirmed = false;
++
+ 	// Show loading text to tell the user that the project manager is busy loading.
+ 	// This is especially important for the Web project manager.
+ 	loading_label->show();
+ 
+-	const HashSet<String> &selected_list = project_list->get_selected_project_keys();
+ 	for (const String &path : selected_list) {
+ 		String conf = path.path_join("project.godot");
+ 
+@@ -1822,6 +1843,13 @@ ProjectManager::ProjectManager() {
+ 		open_recovery_mode_ask->get_ok_button()->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_on_recovery_mode_popup_open_recovery));
+ 		add_child(open_recovery_mode_ask);
+ 
++		device_limits_ask = memnew(ConfirmationDialog);
++		device_limits_ask->set_title(TTRC("Project Too Large for This Device?"));
++		device_limits_ask->set_ok_button_text(TTRC("Open Anyway"));
++		device_limits_ask->get_ok_button()->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_open_selected_projects_after_device_check));
++		device_limits_ask->set_autowrap(true);
++		add_child(device_limits_ask);
++
+ 		ask_update_settings = memnew(ConfirmationDialog);
+ 		add_child(ask_update_settings);
+ 		ask_update_vb = memnew(VBoxContainer);
+diff --git a/editor/project_manager/project_manager.h b/editor/project_manager/project_manager.h
+index 501cdb0..f06adf4 100644
+--- a/editor/project_manager/project_manager.h
++++ b/editor/project_manager/project_manager.h
+@@ -188,6 +188,7 @@ class ProjectManager : public Control {
+ 	void _open_selected_projects();
+ 	void _open_selected_projects_with_migration();
+ 	void _open_selected_projects_check_warnings();
++	void _open_selected_projects_after_device_check();
+ 	void _open_selected_projects_check_recovery_mode();
+ 
+ 	void _install_project(const String &p_zip_path, const String &p_title);
+@@ -244,6 +245,8 @@ class ProjectManager : public Control {
+ 
+ 	ConfirmationDialog *ask_full_convert_dialog = nullptr;
+ 	ConfirmationDialog *ask_update_settings = nullptr;
++	ConfirmationDialog *device_limits_ask = nullptr;
++	bool device_limits_confirmed = false;
+ 	VBoxContainer *ask_update_vb = nullptr;
+ 	Label *ask_update_label = nullptr;
+ 	CheckBox *ask_update_backup = nullptr;
+diff --git a/editor/run/editor_run.cpp b/editor/run/editor_run.cpp
+index 8399876..c09ee88 100644
+--- a/editor/run/editor_run.cpp
++++ b/editor/run/editor_run.cpp
+@@ -158,6 +158,24 @@ Error EditorRun::run(const String &p_scene, const String &p_write_movie, const V
+ 		}
+ 	}
+ 
++	if (OS::get_singleton()->is_in_process_instances_enabled()) {
++		// The platform cannot spawn a separate game process (e.g. the iPadOS editor): the game runs
++		// in this process after the editor shuts down, and the editor is reopened when it quits.
++		if (RunInstancesDialog::get_singleton()->get_instance_count() > 1) {
++			WARN_PRINT("Running multiple instances is not supported when the game runs in the editor process. Only one instance will be started.");
++		}
++		List<String> instance_args(args);
++		RunInstancesDialog::get_singleton()->get_argument_list_for_instance(0, instance_args);
++		RunInstancesDialog::get_singleton()->apply_custom_features(0);
++		const Error err = EditorNode::get_singleton()->run_game_in_process(instance_args, p_scene);
++		ERR_FAIL_COND_V(err, err);
++		status = STATUS_PLAY;
++		if (!p_scene.is_empty()) {
++			running_scene = p_scene;
++		}
++		return OK;
++	}
++
+ 	String exec = OS::get_singleton()->get_executable_path();
+ 	int instance_count = RunInstancesDialog::get_singleton()->get_instance_count();
+ 	for (int i = 0; i < instance_count; i++) {
+diff --git a/editor/run/game_view_plugin.cpp b/editor/run/game_view_plugin.cpp
+index 80b8af9..d792805 100644
+--- a/editor/run/game_view_plugin.cpp
++++ b/editor/run/game_view_plugin.cpp
+@@ -1699,7 +1699,7 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embe
+ 
+ void GameViewPluginBase::selected_notify() {
+ 	if (_is_window_wrapper_enabled()) {
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 		notify_main_screen_changed(get_plugin_name());
+ #else
+ 		window_wrapper->grab_window_focus();
+@@ -1708,7 +1708,7 @@ void GameViewPluginBase::selected_notify() {
+ 	}
+ }
+ 
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ void GameViewPluginBase::make_visible(bool p_visible) {
+ 	if (p_visible) {
+ 		window_wrapper->show();
+@@ -1747,7 +1747,7 @@ void GameViewPluginBase::setup(Ref<GameViewDebugger> p_debugger, EmbeddedProcess
+ void GameViewPluginBase::_notification(int p_what) {
+ 	switch (p_what) {
+ 		case NOTIFICATION_TRANSLATION_CHANGED: {
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 			window_wrapper->set_window_title(vformat(TTR("%s - Godot Engine"), TTR("Game Workspace")));
+ #endif
+ 		} break;
+@@ -1779,7 +1779,7 @@ void GameViewPluginBase::_focus_another_editor() {
+ }
+ 
+ bool GameViewPluginBase::_is_window_wrapper_enabled() const {
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 	return true;
+ #else
+ 	return window_wrapper->get_window_enabled();
+@@ -1787,13 +1787,13 @@ bool GameViewPluginBase::_is_window_wrapper_enabled() const {
+ }
+ 
+ GameViewPluginBase::GameViewPluginBase() {
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 	debugger.instantiate();
+ #endif
+ }
+ 
+ GameViewPlugin::GameViewPlugin() {
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 	Ref<GameViewDebugger> game_view_debugger;
+ 	game_view_debugger.instantiate();
+ 	EmbeddedProcess *embedded_process = memnew(EmbeddedProcess);
+diff --git a/editor/run/game_view_plugin.h b/editor/run/game_view_plugin.h
+index ddcc21d..82c7802 100644
+--- a/editor/run/game_view_plugin.h
++++ b/editor/run/game_view_plugin.h
+@@ -289,7 +289,7 @@ public:
+ class GameViewPluginBase : public EditorPlugin {
+ 	GDCLASS(GameViewPluginBase, EditorPlugin);
+ 
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 	GameView *game_view = nullptr;
+ 	WindowWrapper *window_wrapper = nullptr;
+ #endif // ANDROID_ENABLED
+@@ -298,7 +298,7 @@ class GameViewPluginBase : public EditorPlugin {
+ 
+ 	String last_editor;
+ 
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 	void _window_visibility_changed(bool p_visible);
+ #endif // ANDROID_ENABLED
+ 	void _save_last_editor(const String &p_editor);
+@@ -307,7 +307,7 @@ class GameViewPluginBase : public EditorPlugin {
+ 
+ protected:
+ 	void _notification(int p_what);
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 	void setup(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embedded_process);
+ #endif
+ 
+@@ -320,7 +320,7 @@ public:
+ 
+ 	Ref<GameViewDebugger> get_debugger() const { return debugger; }
+ 
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 	virtual void make_visible(bool p_visible) override;
+ 
+ 	virtual void set_window_layout(Ref<ConfigFile> p_layout) override;
+diff --git a/editor/script/script_editor_plugin.cpp b/editor/script/script_editor_plugin.cpp
+index 0e60dde..dacc55e 100644
+--- a/editor/script/script_editor_plugin.cpp
++++ b/editor/script/script_editor_plugin.cpp
+@@ -1510,12 +1510,12 @@ void ScriptEditor::_notification(int p_what) {
+ 			list_split->connect("dragged", callable_mp(this, &ScriptEditor::_split_dragged));
+ 
+ 			EditorFileSystem::get_singleton()->connect("filesystem_changed", callable_mp(this, &ScriptEditor::_filesystem_changed));
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 			set_process(true);
+ #endif
+ 		} break;
+ 
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 		case NOTIFICATION_VISIBILITY_CHANGED: {
+ 			set_process(is_visible_in_tree());
+ 		} break;
+@@ -3832,7 +3832,7 @@ ScriptEditor::ScriptEditor(WindowWrapper *p_wrapper) {
+ 	script_split->set_v_size_flags(SIZE_EXPAND_FILL);
+ 	script_split->set_drag_nested_intersections(true);
+ 
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 	virtual_keyboard_spacer = memnew(Control);
+ 	virtual_keyboard_spacer->set_h_size_flags(SIZE_EXPAND_FILL);
+ 	main_container->add_child(virtual_keyboard_spacer);
+diff --git a/editor/script/script_editor_plugin.h b/editor/script/script_editor_plugin.h
+index 067c3fb..7519a99 100644
+--- a/editor/script/script_editor_plugin.h
++++ b/editor/script/script_editor_plugin.h
+@@ -200,7 +200,7 @@ class ScriptEditor : public PanelContainer {
+ 
+ 	WindowWrapper *window_wrapper = nullptr;
+ 
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 	Control *virtual_keyboard_spacer = nullptr;
+ 	int last_kb_height = -1;
+ #endif
+diff --git a/editor/script/script_text_editor.cpp b/editor/script/script_text_editor.cpp
+index a609616..e8898f9 100644
+--- a/editor/script/script_text_editor.cpp
++++ b/editor/script/script_text_editor.cpp
+@@ -785,7 +785,7 @@ void ScriptTextEditor::set_edit_state(const Variant &p_state) {
+ 	}
+ 
+ 	if (editor_enabled) {
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 		ensure_focus();
+ #endif
+ 	}
+diff --git a/editor/settings/editor_settings.cpp b/editor/settings/editor_settings.cpp
+index 8dc98d6..f8ed84d 100644
+--- a/editor/settings/editor_settings.cpp
++++ b/editor/settings/editor_settings.cpp
+@@ -504,7 +504,12 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+ 	}
+ 
+ 	EDITOR_SETTING_USAGE(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/appearance/use_embedded_menu", false, "", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_EDITOR_BASIC_SETTING)
++#ifdef APPLE_EMBEDDED_ENABLED
++	// Use the system document picker by default, so that projects outside of the sandbox can be opened.
++	EDITOR_SETTING_USAGE(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/appearance/use_native_file_dialogs", true, "", PROPERTY_USAGE_DEFAULT)
++#else
+ 	EDITOR_SETTING_USAGE(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/appearance/use_native_file_dialogs", false, "", PROPERTY_USAGE_DEFAULT)
++#endif
+ 	EDITOR_SETTING_USAGE(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/appearance/expand_to_title", true, "", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_RESTART_IF_CHANGED | PROPERTY_USAGE_EDITOR_BASIC_SETTING)
+ 
+ 	EDITOR_SETTING_BASIC(Variant::INT, PROPERTY_HINT_RANGE, "interface/editor/fonts/main_font_size", 14, "8,48,1")
+@@ -532,7 +537,12 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+ 	EDITOR_SETTING_USAGE(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/display/single_window_mode", false, "", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_RESTART_IF_CHANGED | PROPERTY_USAGE_EDITOR_BASIC_SETTING)
+ 	_initial_set("interface/editor/input/mouse_extra_buttons_navigate_history", true);
+ 	_initial_set("interface/editor/behavior/save_each_scene_on_quit", true, true); // Regression
++#ifdef APPLE_EMBEDDED_ENABLED
++	// iPadOS can terminate a suspended app at any time without notice, so save when the app loses focus.
++	EDITOR_SETTING_BASIC(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/behavior/save_on_focus_loss", true, "")
++#else
+ 	EDITOR_SETTING_BASIC(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/behavior/save_on_focus_loss", false, "")
++#endif
+ 	EDITOR_SETTING_USAGE(Variant::INT, PROPERTY_HINT_ENUM, "interface/editor/appearance/accept_dialog_cancel_ok_buttons", 0,
+ 			vformat("Auto (%s),Cancel First,OK First", DisplayServer::get_singleton()->get_swap_cancel_ok() ? "OK First" : "Cancel First"),
+ 			PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_RESTART_IF_CHANGED);
+@@ -563,6 +573,8 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+ 	if (!OS::get_singleton()->has_feature("xr_editor")) {
+ 		is_android_editor = true;
+ 	}
++#elif defined(APPLE_EMBEDDED_ENABLED)
++	is_android_editor = true; // The iPadOS editor uses the same compact main menu.
+ #endif
+ 	EDITOR_SETTING(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/appearance/collapse_main_menu", is_android_editor, "")
+ 
+@@ -976,7 +988,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+ 	EDITOR_SETTING(Variant::FLOAT, PROPERTY_HINT_RANGE, "editors/3d/navigation_feel/angle_snap_threshold", 10.0, "1,20,0.1,degrees")
+ 	_initial_set("editors/3d/navigation/show_viewport_rotation_gizmo", true);
+ 	bool should_show_viewport_navigation_gizmo = false;
+-#ifdef ANDROID_ENABLED
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 	should_show_viewport_navigation_gizmo = true;
+ #endif
+ 	_initial_set("editors/3d/navigation/show_viewport_navigation_gizmo", should_show_viewport_navigation_gizmo);
+@@ -1083,7 +1095,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+ 	/* Run */
+ 
+ 	// Window placement
+-#ifndef ANDROID_ENABLED
++#if !(defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED))
+ 	EDITOR_SETTING_BASIC(Variant::INT, PROPERTY_HINT_ENUM, "run/window_placement/rect", 1, "Top Left,Centered,Custom Position,Force Maximized,Force Fullscreen")
+ 	// Keep the enum values in sync with the `DisplayServer::SCREEN_` enum.
+ 	String screen_hints = "Same as Editor:-5,Previous Screen:-4,Next Screen:-3,Primary Screen:-2"; // Note: Main Window Screen:-1 is not used for the main window.
+@@ -1098,14 +1110,21 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+ 	EDITOR_SETTING_BASIC(Variant::INT, PROPERTY_HINT_ENUM, "run/window_placement/android_window", 0, android_window_hints)
+ 
+ 	String game_embed_mode_hints = "Disabled:-1,Use Per-Project Configuration:0,Embed Game:1,Make Game Workspace Floating:2";
+-#ifdef ANDROID_ENABLED
++#if defined(APPLE_EMBEDDED_ENABLED)
++	// The game runs in the editor process after the editor closes, so it can't be embedded.
++	game_embed_mode_hints = "Disabled:-1";
++#elif defined(ANDROID_ENABLED)
+ 	if (OS::get_singleton()->has_feature("xr_editor")) {
+ 		game_embed_mode_hints = "Disabled:-1";
+ 	} else {
+ 		game_embed_mode_hints = "Disabled:-1,Auto (based on screen size):0,Enabled:1";
+ 	}
+ #endif
++#ifdef APPLE_EMBEDDED_ENABLED
++	int default_game_embed_mode = -1;
++#else
+ 	int default_game_embed_mode = OS::get_singleton()->has_feature("xr_editor") ? -1 : 0;
++#endif
+ 	EDITOR_SETTING_BASIC(Variant::INT, PROPERTY_HINT_ENUM, "run/window_placement/game_embed_mode", default_game_embed_mode, game_embed_mode_hints);
+ 
+ 	// Auto save
+@@ -1179,7 +1198,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+ #if defined(WEB_ENABLED)
+ 	// Web platform only supports `gl_compatibility`.
+ 	const String default_renderer = "gl_compatibility";
+-#elif defined(ANDROID_ENABLED)
++#elif defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 	// Use more suitable rendering method by default.
+ 	const String default_renderer = "mobile";
+ #else
+@@ -1995,7 +2014,7 @@ float EditorSettings::get_auto_display_scale() {
+ 	}
+ #endif
+ 
+-#if defined(MACOS_ENABLED) || defined(ANDROID_ENABLED)
++#if defined(MACOS_ENABLED) || defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 	return DisplayServer::get_singleton()->screen_get_max_scale();
+ #else
+ 	const int screen = DisplayServer::get_singleton()->window_get_current_screen();
+@@ -2194,7 +2213,7 @@ void ED_SHORTCUT_OVERRIDE_ARRAY(const String &p_path, const String &p_feature, c
+ 
+ 	// Only add the override if the OS supports the provided feature.
+ 	if (!OS::get_singleton()->has_feature(p_feature)) {
+-		if (!(p_feature == "macos" && (OS::get_singleton()->has_feature("web_macos") || OS::get_singleton()->has_feature("web_ios")))) {
++		if (!(p_feature == "macos" && OS::prefer_meta_over_ctrl())) {
+ 			return;
+ 		}
+ 	}
+diff --git a/scene/gui/file_dialog.cpp b/scene/gui/file_dialog.cpp
+index eaa1c70..68422ff 100644
+--- a/scene/gui/file_dialog.cpp
++++ b/scene/gui/file_dialog.cpp
+@@ -807,7 +807,7 @@ void FileDialog::_popup_menu(const Vector2 &p_pos, int p_for_item) {
+ 		item_menu->set_item_shortcut(-1, action_shortcuts[ITEM_MENU_REFRESH]);
+ 	}
+ 
+-#if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
++#if !defined(ANDROID_ENABLED) && !defined(APPLE_EMBEDDED_ENABLED) && !defined(WEB_ENABLED)
+ 	// Opening the system file manager is not supported on the Android and web editors.
+ 	item_menu->add_separator();
+ 
+@@ -1546,6 +1546,9 @@ void FileDialog::set_access(Access p_access) {
+ 			dir_access = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+ #ifdef ANDROID_ENABLED
+ 			set_current_dir(OS::get_singleton()->get_system_dir(OS::SYSTEM_DIR_DESKTOP));
++#elif defined(APPLE_EMBEDDED_ENABLED)
++			// The app's Documents folder is the part of the sandbox visible in the Files app.
++			set_current_dir(OS::get_singleton()->get_system_dir(OS::SYSTEM_DIR_DOCUMENTS));
+ #endif
+ 		} break;
+ 		case ACCESS_RESOURCES: {

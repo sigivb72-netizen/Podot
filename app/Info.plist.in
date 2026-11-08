@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>@DISPLAY_NAME@</string>
+	<key>CFBundleExecutable</key>
+	<string>@EXECUTABLE@</string>
+	<key>CFBundleIdentifier</key>
+	<string>@BUNDLE_ID@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>@EXECUTABLE@</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD_NUMBER@</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>@SUPPORTED_PLATFORM@</string>
+	</array>
+	<key>DTPlatformName</key>
+	<string>@PLATFORM_NAME@</string>
+	<key>DTPlatformVersion</key>
+	<string>@SDK_VERSION@</string>
+	<key>DTSDKName</key>
+	<string>@PLATFORM_NAME@@SDK_VERSION@</string>
+	<key>MinimumOSVersion</key>
+	<string>@MIN_OS@</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>2</integer>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>CFBundleIcons~ipad</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon76x76</string>
+				<string>AppIcon83.5x83.5</string>
+			</array>
+		</dict>
+	</dict>
+	<!-- The editor keeps the desktop layout and supports every orientation, Split View and Slide Over. -->
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+	</array>
+	<key>UIRequiresFullScreen</key>
+	<false/>
+	<key>UIStatusBarHidden</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<!-- Godot uses process-wide singletons: one editor window per app instance. -->
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<!-- Mouse and trackpad are reported as pointer events (hover, buttons, scrolling). -->
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+	<!-- Projects in the app's Documents folder are visible and editable in the Files app. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Projects you run or edit may record audio (for example with AudioEffectRecord).</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Projects you run or edit may use the camera (CameraServer).</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Projects you run or edit may access your photo library.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Used for the Godot debugger, remote scene inspection and the GDScript language server.</string>
+</dict>
+</plist>

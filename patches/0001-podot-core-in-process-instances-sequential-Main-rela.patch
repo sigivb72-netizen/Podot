@@ -1,0 +1,566 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sigivb72-netizen <vergilx63@gmail.com>
+Date: Sun, 8 Nov 2026 10:25:04 +0000
+Subject: [PATCH 1/4] podot: core: in-process instances (sequential Main
+ relaunch in one process)
+
+Platforms that cannot spawn processes (the iPadOS editor) can enable
+in-process instances: OS::create_instance() then queues the arguments, and
+the platform main loop fully cleans up Main and sets it up again with them.
+
+- OS: instance queue, session data surviving relaunches, logger scope.
+- StringName: optionally keep the entries of static StringNames (SNAME)
+  alive across cleanup, so they don't dangle after a relaunch.
+- Main: reset file-scope state before a repeated setup.
+- CompositeLogger: allow dropping loggers added by Main.
+- linuxbsd: honor GODOT_IN_PROCESS_INSTANCES=1 to test the flow on desktop.
+---
+ core/io/logger.cpp                   |   9 ++
+ core/io/logger.h                     |   3 +
+ core/os/os.cpp                       |  55 +++++++++
+ core/os/os.h                         |  39 ++++++-
+ core/string/string_name.cpp          |  43 +++++++
+ core/string/string_name.h            |   4 +
+ main/main.cpp                        | 163 +++++++++++++++++++++++++++
+ platform/linuxbsd/godot_linuxbsd.cpp |  61 ++++++++--
+ 8 files changed, 364 insertions(+), 13 deletions(-)
+
+diff --git a/core/io/logger.cpp b/core/io/logger.cpp
+index 2973bd0..82334d4 100644
+--- a/core/io/logger.cpp
++++ b/core/io/logger.cpp
+@@ -269,6 +269,15 @@ void CompositeLogger::add_logger(Logger *p_logger) {
+ 	loggers.push_back(p_logger);
+ }
+ 
++void CompositeLogger::truncate_loggers(int p_count) {
++	ERR_FAIL_COND(p_count < 0);
++	while (loggers.size() > p_count) {
++		Logger *logger = loggers[loggers.size() - 1];
++		loggers.remove_at(loggers.size() - 1);
++		memdelete(logger);
++	}
++}
++
+ CompositeLogger::~CompositeLogger() {
+ 	for (int i = 0; i < loggers.size(); ++i) {
+ 		memdelete(loggers[i]);
+diff --git a/core/io/logger.h b/core/io/logger.h
+index 6fa0cc2..d63b220 100644
+--- a/core/io/logger.h
++++ b/core/io/logger.h
+@@ -135,6 +135,9 @@ public:
+ 	virtual void log_error(const char *p_function, const char *p_file, int p_line, const char *p_code, const char *p_rationale, bool p_editor_notify, ErrorType p_type = ERR_ERROR, const Vector<Ref<ScriptBacktrace>> &p_script_backtraces = {}) override;
+ 
+ 	void add_logger(Logger *p_logger);
++	int get_logger_count() const { return loggers.size(); }
++	// Deletes the loggers added after the first `p_count` ones.
++	void truncate_loggers(int p_count);
+ 
+ 	virtual ~CompositeLogger();
+ };
+diff --git a/core/os/os.cpp b/core/os/os.cpp
+index ffc0dff..f8169b4 100644
+--- a/core/os/os.cpp
++++ b/core/os/os.cpp
+@@ -662,6 +662,61 @@ List<String> OS::get_restart_on_exit_arguments() const {
+ 	return List<String>(restart_commandline);
+ }
+ 
++void OS::begin_in_process_logger_scope() {
++	in_process_base_logger_count = _logger ? _logger->get_logger_count() : 0;
++}
++
++void OS::end_in_process_logger_scope() {
++	if (_logger && in_process_base_logger_count >= 0) {
++		_logger->truncate_loggers(in_process_base_logger_count);
++	}
++	in_process_base_logger_count = -1;
++}
++
++void OS::set_in_process_instances_enabled(bool p_enabled) {
++	in_process_instances = p_enabled;
++}
++
++bool OS::is_in_process_instances_enabled() const {
++	return in_process_instances;
++}
++
++void OS::queue_in_process_instance(const List<String> &p_arguments, bool p_front) {
++	if (p_front) {
++		pending_in_process_instances.push_front(p_arguments);
++	} else {
++		pending_in_process_instances.push_back(p_arguments);
++	}
++}
++
++bool OS::has_pending_in_process_instance() const {
++	return !pending_in_process_instances.is_empty();
++}
++
++List<String> OS::pop_pending_in_process_instance() {
++	ERR_FAIL_COND_V(pending_in_process_instances.is_empty(), List<String>());
++	List<String> args(pending_in_process_instances.front()->get());
++	pending_in_process_instances.pop_front();
++	return args;
++}
++
++void OS::clear_pending_in_process_instances() {
++	pending_in_process_instances.clear();
++}
++
++void OS::set_in_process_session_value(const String &p_key, const String &p_value) {
++	in_process_session_data[p_key] = p_value;
++}
++
++String OS::get_in_process_session_value(const String &p_key, const String &p_default) const {
++	const String *v = in_process_session_data.getptr(p_key);
++	return v ? *v : p_default;
++}
++
++void OS::erase_in_process_session_value(const String &p_key) {
++	in_process_session_data.erase(p_key);
++}
++
+ PackedStringArray OS::get_connected_midi_inputs() {
+ 	if (MIDIDriver::get_singleton()) {
+ 		return MIDIDriver::get_singleton()->get_connected_inputs();
+diff --git a/core/os/os.h b/core/os/os.h
+index fd7b0c8..9b0bb23 100644
+--- a/core/os/os.h
++++ b/core/os/os.h
+@@ -102,6 +102,16 @@ private:
+ 	bool restart_on_exit = false;
+ 	List<String> restart_commandline;
+ 
++	// In-process instances (used by platforms that cannot spawn processes, e.g. the iPadOS editor).
++	// Instances requested through create_instance() are queued and run sequentially in the same
++	// process: the platform main loop fully cleans up Main and sets it up again with the queued
++	// arguments. The session data dictionary survives these relaunches.
++	bool in_process_instances = false;
++	List<List<String>> pending_in_process_instances;
++	HashMap<String, String> in_process_session_data;
++	int in_process_generation = 0;
++	int in_process_base_logger_count = -1;
++
+ 	String _current_rendering_driver_name;
+ 	RenderingSource _current_rendering_driver_name_source = RENDERING_SOURCE_DEFAULT;
+ 	String _current_rendering_method;
+@@ -215,7 +225,16 @@ public:
+ 	virtual Error execute(const String &p_path, const List<String> &p_arguments, String *r_pipe = nullptr, int *r_exitcode = nullptr, bool read_stderr = false, Mutex *p_pipe_mutex = nullptr, bool p_open_console = false) = 0;
+ 	virtual Dictionary execute_with_pipe(const String &p_path, const List<String> &p_arguments, bool p_blocking = true) { return Dictionary(); }
+ 	virtual Error create_process(const String &p_path, const List<String> &p_arguments, ProcessID *r_child_id = nullptr, bool p_open_console = false) = 0;
+-	virtual Error create_instance(const List<String> &p_arguments, ProcessID *r_child_id = nullptr) { return create_process(get_executable_path(), p_arguments, r_child_id); }
++	virtual Error create_instance(const List<String> &p_arguments, ProcessID *r_child_id = nullptr) {
++		if (in_process_instances) {
++			queue_in_process_instance(p_arguments);
++			if (r_child_id) {
++				*r_child_id = 0;
++			}
++			return OK;
++		}
++		return create_process(get_executable_path(), p_arguments, r_child_id);
++	}
+ 	virtual Error open_with_program(const String &p_program_path, const List<String> &p_paths) { return create_process(p_program_path, p_paths); }
+ 	virtual Error kill(const ProcessID &p_pid) = 0;
+ 	virtual int get_process_id() const;
+@@ -369,6 +388,24 @@ public:
+ 	bool is_restart_on_exit_set() const;
+ 	List<String> get_restart_on_exit_arguments() const;
+ 
++	// In-process instance support (see `in_process_instances` above).
++	void set_in_process_instances_enabled(bool p_enabled);
++	bool is_in_process_instances_enabled() const;
++	void queue_in_process_instance(const List<String> &p_arguments, bool p_front = false);
++	bool has_pending_in_process_instance() const;
++	List<String> pop_pending_in_process_instance();
++	void clear_pending_in_process_instances();
++	void set_in_process_session_value(const String &p_key, const String &p_value);
++	String get_in_process_session_value(const String &p_key, const String &p_default = String()) const;
++	void erase_in_process_session_value(const String &p_key);
++	// Incremented every time Main is set up again inside the same process.
++	int get_in_process_generation() const { return in_process_generation; }
++	void increment_in_process_generation() { in_process_generation++; }
++	// Called by Main: remembers the loggers owned by the platform, and drops the ones Main added
++	// (e.g. file loggers) when it is cleaned up before an in-process relaunch.
++	void begin_in_process_logger_scope();
++	void end_in_process_logger_scope();
++
+ 	virtual bool request_permission(const String &p_name) { return true; }
+ 	virtual bool request_permissions() { return true; }
+ 	virtual Vector<String> get_granted_permissions() const { return Vector<String>(); }
+diff --git a/core/string/string_name.cpp b/core/string/string_name.cpp
+index 0892ad0..b4ed64f 100644
+--- a/core/string/string_name.cpp
++++ b/core/string/string_name.cpp
+@@ -47,6 +47,12 @@ struct StringName::Table {
+ 
+ void StringName::setup() {
+ 	ERR_FAIL_COND(configured);
++	if (has_preserved_entries) {
++		// Table still holds the static names kept alive by a previous in-process cleanup.
++		has_preserved_entries = false;
++		configured = true;
++		return;
++	}
+ 	for (uint32_t i = 0; i < Table::TABLE_LEN; i++) {
+ 		Table::table[i] = nullptr;
+ 	}
+@@ -87,6 +93,43 @@ void StringName::cleanup() {
+ 	}
+ #endif
+ 	int lost_strings = 0;
++	if (preserve_static_on_cleanup) {
++		// Keep only the entries referenced by static StringName instances; they outlive Main.
++		for (uint32_t i = 0; i < Table::TABLE_LEN; i++) {
++			_Data *d = Table::table[i];
++			_Data *kept_head = nullptr;
++			_Data *kept_tail = nullptr;
++			while (d) {
++				_Data *next = d->next;
++				const uint32_t static_refs = d->static_count.get();
++				if (static_refs > 0) {
++					if (static_refs != d->refcount.get()) {
++						lost_strings++;
++					}
++					d->refcount.init(static_refs);
++					d->prev = kept_tail;
++					d->next = nullptr;
++					if (kept_tail) {
++						kept_tail->next = d;
++					} else {
++						kept_head = d;
++					}
++					kept_tail = d;
++				} else {
++					lost_strings++;
++					Table::allocator.free(d);
++				}
++				d = next;
++			}
++			Table::table[i] = kept_head;
++		}
++		has_preserved_entries = true;
++		if (lost_strings) {
++			print_verbose(vformat("StringName: %d unclaimed string names at in-process cleanup.", lost_strings));
++		}
++		configured = false;
++		return;
++	}
+ 	for (uint32_t i = 0; i < Table::TABLE_LEN; i++) {
+ 		while (Table::table[i]) {
+ 			_Data *d = Table::table[i];
+diff --git a/core/string/string_name.h b/core/string/string_name.h
+index 0619af8..e0a6f10 100644
+--- a/core/string/string_name.h
++++ b/core/string/string_name.h
+@@ -63,6 +63,10 @@ class [[nodiscard]] StringName {
+ 	static void cleanup();
+ 	static uint32_t get_empty_hash();
+ 	static inline bool configured = false;
++	// When enabled, cleanup() keeps names referenced by static StringNames (e.g. SNAME()) alive, so
++	// that Main can be set up again inside the same process (in-process instances).
++	static inline bool preserve_static_on_cleanup = false;
++	static inline bool has_preserved_entries = false;
+ #ifdef DEBUG_ENABLED
+ 	struct DebugSortReferences {
+ 		bool operator()(const _Data *p_left, const _Data *p_right) const {
+diff --git a/main/main.cpp b/main/main.cpp
+index 2fc62fd..341a2f6 100644
+--- a/main/main.cpp
++++ b/main/main.cpp
+@@ -297,6 +297,124 @@ bool profile_gpu = false;
+ 
+ // Constants.
+ 
++
++static void _reset_main_iteration_state(); // Defined next to the iteration state below.
++
++// Restores the file-scope state above to its initial values, so that Main::setup() can run again
++// inside the same process after Main::cleanup() (in-process instances, see OS::create_instance()).
++static void _reset_main_static_state() {
++	engine = nullptr;
++	globals = nullptr;
++	input = nullptr;
++	input_map = nullptr;
++	translation_server = nullptr;
++	performance = nullptr;
++	packed_data = nullptr;
++#ifdef MINIZIP_ENABLED
++	zip_packed_data = nullptr;
++#endif
++	message_queue = nullptr;
++#if defined(STEAMAPI_ENABLED)
++	steam_tracker = nullptr;
++#endif
++	audio_server = nullptr;
++	camera_server = nullptr;
++	accessibility_server = nullptr;
++	display_server = nullptr;
++	rendering_server = nullptr;
++	tsman = nullptr;
++	theme_db = nullptr;
++#ifndef PHYSICS_2D_DISABLED
++	physics_server_2d_manager = nullptr;
++	physics_server_2d = nullptr;
++#endif // PHYSICS_2D_DISABLED
++#ifndef PHYSICS_3D_DISABLED
++	physics_server_3d_manager = nullptr;
++	physics_server_3d = nullptr;
++#endif // PHYSICS_3D_DISABLED
++#ifndef XR_DISABLED
++	xr_server = nullptr;
++#endif // XR_DISABLED
++	_start_success = false;
++	text_driver_idx = -1;
++	audio_driver_idx = -1;
++	accessibility_mode = AccessibilityServerEnums::AccessibilityMode::ACCESSIBILITY_AUTO;
++	accessibility_driver_name = String();
++	accessibility_mode_set = false;
++	single_window = false;
++	editor = false;
++	project_manager = false;
++	cmdline_tool = false;
++	locale = String();
++	log_file = String();
++	show_help = false;
++	quit_after = 0;
++	editor_pid = 0;
++#ifdef TOOLS_ENABLED
++	found_project = false;
++	recovery_mode = false;
++	auto_build_solutions = false;
++	debug_server_uri = String();
++	wait_for_import = false;
++	restore_editor_window_layout = true;
++#ifndef DISABLE_DEPRECATED
++	converter_max_kb_file = 4 * 1024;
++	converter_max_line_length = 100000;
++#endif // DISABLE_DEPRECATED
++#endif
++	single_threaded_scene = false;
++	window_mode = DisplayServerEnums::WINDOW_MODE_WINDOWED;
++	window_orientation = DisplayServerEnums::SCREEN_LANDSCAPE;
++	window_vsync_mode = DisplayServerEnums::VSYNC_ENABLED;
++	window_flags = 0;
++	window_size = Size2i(1152, 648);
++	init_screen = DisplayServerEnums::SCREEN_PRIMARY;
++	init_fullscreen = false;
++	init_maximized = false;
++	init_windowed = false;
++	init_always_on_top = false;
++	init_use_custom_pos = false;
++	init_use_custom_screen = false;
++	init_custom_pos = Vector2();
++	init_embed_parent_window_id = 0;
++#ifdef TOOLS_ENABLED
++	init_display_scale_found = false;
++	init_display_scale = 0;
++	init_custom_scale_found = false;
++	init_custom_scale = 1.0;
++	init_expand_to_title = false;
++	init_expand_to_title_found = false;
++#endif
++	use_custom_res = true;
++	force_res = false;
++	use_debug_profiler = false;
++#ifdef DEBUG_ENABLED
++	debug_collisions = false;
++	debug_paths = false;
++	debug_navigation = false;
++	debug_avoidance = false;
++	debug_canvas_item_redraw = false;
++	debug_mute_audio = false;
++#endif
++	max_fps = -1;
++	frame_delay = 0;
++	audio_output_latency = 0;
++	disable_render_loop = false;
++	fixed_fps = -1;
++	movie_writer = nullptr;
++	disable_vsync = false;
++	print_fps = false;
++#ifdef TOOLS_ENABLED
++	editor_pseudolocalization = false;
++	dump_gdextension_interface = false;
++	dump_gdextension_interface_header = false;
++	dump_extension_api = false;
++	include_docs_in_extension_api_dump = false;
++	validate_extension_api = false;
++	validate_extension_api_file = String();
++#endif
++}
++
+ static const String NULL_DISPLAY_DRIVER("headless");
+ static const String EMBEDDED_DISPLAY_DRIVER("embedded");
+ static const String NULL_AUDIO_DRIVER("Dummy");
+@@ -975,6 +1093,10 @@ void Main::test_cleanup() {
+ 
+ 	OS::get_singleton()->finalize_core();
+ 
++	if (OS::get_singleton()->is_in_process_instances_enabled()) {
++		OS::get_singleton()->end_in_process_logger_scope();
++	}
++
+ 	Thread::release_main_thread();
+ }
+ #endif // TESTS_ENABLED
+@@ -1037,7 +1159,22 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
+ 	Thread::make_main_thread();
+ 	set_current_thread_safe_for_nodes(true);
+ 
++	if (OS::get_singleton()->get_in_process_generation() > 0) {
++		// Main is being set up again inside the same process (in-process instance).
++		_reset_main_static_state();
++		Main::last_ticks = 0;
++		Main::frames = 0;
++		Main::hide_print_fps_attempts = 3;
++		Main::frame = 0;
++		Main::force_redraw_requested = false;
++		Main::iterating = 0;
++		_reset_main_iteration_state();
++	}
++
+ 	OS::get_singleton()->initialize();
++	OS::get_singleton()->begin_in_process_logger_scope();
++	// Keep static StringNames alive across Main teardowns if Main can be set up again in this process.
++	StringName::preserve_static_on_cleanup = OS::get_singleton()->is_in_process_instances_enabled();
+ 
+ 	CoreGlobals::print_ready = true;
+ 
+@@ -3006,6 +3143,10 @@ error:
+ 	OS::get_singleton()->finalize_core();
+ 	locale = String();
+ 
++	if (OS::get_singleton()->is_in_process_instances_enabled()) {
++		OS::get_singleton()->end_in_process_logger_scope();
++	}
++
+ 	Thread::release_main_thread();
+ 
+ 	return exit_err;
+@@ -4915,6 +5056,13 @@ static uint64_t physics_process_max = 0;
+ static uint64_t process_max = 0;
+ static uint64_t navigation_process_max = 0;
+ 
++static void _reset_main_iteration_state() {
++	main_timer_sync = MainTimerSync();
++	physics_process_max = 0;
++	process_max = 0;
++	navigation_process_max = 0;
++}
++
+ // Return false means iterating further, returning true means `OS::run`
+ // will terminate the program. In case of failure, the OS exit code needs
+ // to be set explicitly here (defaults to EXIT_SUCCESS).
+@@ -5258,6 +5406,14 @@ void Main::cleanup(bool p_force) {
+ 
+ 	OS::get_singleton()->delete_main_loop();
+ 
++	if (OS::get_singleton()->is_in_process_instances_enabled() && !editor && !project_manager &&
++			OS::get_singleton()->get_in_process_session_value("game_running") == "1") {
++		// A game started by the editor in this process is ending; record the result for the editor.
++		OS::get_singleton()->set_in_process_session_value("game_running", "0");
++		OS::get_singleton()->set_in_process_session_value("game_exit_code", itos(OS::get_singleton()->get_exit_code()));
++		OS::get_singleton()->set_in_process_session_value("game_end_ticks", itos(OS::get_singleton()->get_ticks_msec()));
++	}
++
+ 	OS::get_singleton()->_cmdline.clear();
+ 	OS::get_singleton()->_user_args.clear();
+ 	OS::get_singleton()->_execpath = "";
+@@ -5395,6 +5551,9 @@ void Main::cleanup(bool p_force) {
+ 		memdelete(engine);
+ 	}
+ 
++	// Keep static StringNames alive if Main is going to be set up again in this process.
++	StringName::preserve_static_on_cleanup = OS::get_singleton()->is_in_process_instances_enabled();
++
+ 	unregister_core_types();
+ 
+ 	OS::get_singleton()->benchmark_end_measure("Shutdown", "Main::Cleanup");
+@@ -5402,5 +5561,9 @@ void Main::cleanup(bool p_force) {
+ 
+ 	OS::get_singleton()->finalize_core();
+ 
++	if (OS::get_singleton()->is_in_process_instances_enabled()) {
++		OS::get_singleton()->end_in_process_logger_scope();
++	}
++
+ 	Thread::release_main_thread();
+ }
+diff --git a/platform/linuxbsd/godot_linuxbsd.cpp b/platform/linuxbsd/godot_linuxbsd.cpp
+index d96c940..47a7ffe 100644
+--- a/platform/linuxbsd/godot_linuxbsd.cpp
++++ b/platform/linuxbsd/godot_linuxbsd.cpp
+@@ -108,22 +108,59 @@ int main(int argc, char *argv[]) {
+ 	ERR_FAIL_NULL_V(cwd, ERR_OUT_OF_MEMORY);
+ 	char *ret = getcwd(cwd, PATH_MAX);
+ 
+-	Error err = Main::setup(argv[0], argc - 1, &argv[1]);
++	// Optional: run instances requested by the editor (project manager -> editor -> game) sequentially
++	// inside this process instead of spawning new processes. This mirrors the iPadOS editor workflow,
++	// which cannot create processes, and allows testing it on desktop.
++	if (os.has_environment("GODOT_IN_PROCESS_INSTANCES") && os.get_environment("GODOT_IN_PROCESS_INSTANCES") != "0") {
++		os.set_in_process_instances_enabled(true);
++	}
++
++	Vector<CharString> relaunch_args_utf8;
++	Vector<char *> relaunch_argv;
+ 
+-	if (err != OK) {
+-		free(cwd);
+-		if (err == ERR_HELP) { // Returned by --help and --version, so success.
+-			return EXIT_SUCCESS;
++	while (true) {
++		Error err;
++		if (os.get_in_process_generation() == 0) {
++			err = Main::setup(argv[0], argc - 1, &argv[1]);
++		} else {
++			err = Main::setup(argv[0], relaunch_argv.size(), relaunch_argv.ptrw());
+ 		}
+-		return EXIT_FAILURE;
+-	}
+ 
+-	if (Main::start() == EXIT_SUCCESS) {
+-		os.run();
+-	} else {
+-		os.set_exit_code(EXIT_FAILURE);
++		if (err != OK) {
++			free(cwd);
++			if (err == ERR_HELP) { // Returned by --help and --version, so success.
++				return EXIT_SUCCESS;
++			}
++			return EXIT_FAILURE;
++		}
++
++		if (Main::start() == EXIT_SUCCESS) {
++			os.run();
++		} else {
++			os.set_exit_code(EXIT_FAILURE);
++		}
++		// Forced, so that a failed Main::start() is also fully cleaned up before relaunching.
++		Main::cleanup(os.is_in_process_instances_enabled());
++
++		if (!os.is_in_process_instances_enabled() || !os.has_pending_in_process_instance()) {
++			break;
++		}
++
++		List<String> next_args = os.pop_pending_in_process_instance();
++		relaunch_args_utf8.clear();
++		relaunch_argv.clear();
++		for (const String &arg : next_args) {
++			relaunch_args_utf8.push_back(arg.utf8());
++		}
++		for (CharString &arg : relaunch_args_utf8) {
++			relaunch_argv.push_back(arg.ptrw());
++		}
++		os.increment_in_process_generation();
++		os.set_exit_code(EXIT_SUCCESS);
++		if (ret && chdir(cwd) != 0) {
++			ERR_PRINT("Couldn't return to previous working directory.");
++		}
+ 	}
+-	Main::cleanup();
+ 
+ 	if (ret) { // Previous getcwd was successful
+ 		if (chdir(cwd) != 0) {

@@ -1,0 +1,128 @@
+name: iPadOS editor
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SCONS_CACHE_LIMIT: 6
+
+jobs:
+  linux-tests:
+    name: Linux editor build + port tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential pkg-config
+          pip install scons
+      - name: Fetch Godot and apply the port
+        run: scripts/fetch_godot.sh
+      - uses: actions/cache@v4
+        with:
+          path: .scons_cache
+          key: linux-editor-${{ hashFiles('UPSTREAM', 'patches/**') }}
+          restore-keys: linux-editor-
+      - name: Build editor (with unit tests)
+        run: |
+          cd godot
+          scons platform=linuxbsd target=editor tests=yes debug_symbols=no -j$(nproc) \
+            cache_path="$GITHUB_WORKSPACE/.scons_cache" cache_limit=$SCONS_CACHE_LIMIT
+      - name: Unit tests and in-process end-to-end test
+        run: scripts/run_linux_tests.sh godot/bin/godot.linuxbsd.editor.x86_64 build/linux-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-test-results
+          path: build/linux-results
+
+  ios-device:
+    name: iPadOS device build (IPA)
+    runs-on: macos-15
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: pip3 install --break-system-packages scons || pip3 install scons
+      - name: Fetch Godot and apply the port
+        run: scripts/fetch_godot.sh
+      - uses: actions/cache@v4
+        with:
+          path: .scons_cache
+          key: ios-device-${{ hashFiles('UPSTREAM', 'patches/**') }}
+          restore-keys: ios-device-
+      - name: Build editor library (arm64, Metal + OpenGL ES)
+        env:
+          SCONS_CACHE_DIR: ${{ github.workspace }}/.scons_cache
+        run: scripts/build_ios_editor.sh device
+      - name: Import signing certificate (optional)
+        env:
+          IOS_CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
+          IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+          IOS_PROFILE_BASE64: ${{ secrets.IOS_PROFILE_BASE64 }}
+        if: env.IOS_CERT_P12_BASE64 != ''
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p ci "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p ci "$KEYCHAIN"
+          echo "$IOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$IOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN"
+          echo "$IOS_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/profile.mobileprovision"
+          echo "IOS_PROVISIONING_PROFILE=$RUNNER_TEMP/profile.mobileprovision" >> "$GITHUB_ENV"
+      - name: Package app and IPA
+        env:
+          IOS_SIGN_IDENTITY: ${{ secrets.IOS_SIGN_IDENTITY }}
+          IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: scripts/package_ios_app.sh device build/device
+      - uses: actions/upload-artifact@v4
+        with:
+          name: podot-ipados-ipa
+          path: build/device/*.ipa
+
+  ios-simulator:
+    name: iPadOS Simulator build + tests
+    runs-on: macos-15
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          pip3 install --break-system-packages scons || pip3 install scons
+          brew install cliclick || true
+      - name: Fetch Godot and apply the port
+        run: scripts/fetch_godot.sh
+      - uses: actions/cache@v4
+        with:
+          path: .scons_cache
+          key: ios-simulator-${{ hashFiles('UPSTREAM', 'patches/**') }}
+          restore-keys: ios-simulator-
+      - name: Build editor library (arm64 simulator, OpenGL ES)
+        env:
+          SCONS_CACHE_DIR: ${{ github.workspace }}/.scons_cache
+        run: scripts/build_ios_editor.sh simulator
+      - name: Package simulator app
+        run: scripts/package_ios_app.sh simulator build/simulator
+      - name: Run tests in the iPad Simulator
+        run: scripts/run_simulator_tests.sh build/simulator/Podot.app build/simulator-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-test-results
+          path: build/simulator-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: podot-simulator-app
+          path: build/simulator/Podot.app

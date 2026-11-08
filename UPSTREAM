@@ -1,0 +1,4 @@
+# Upstream Godot Engine revision the patches in patches/ apply to.
+GODOT_REPO=https://github.com/godotengine/godot.git
+GODOT_TAG=4.7.2-stable
+GODOT_COMMIT=ed1daf0bf001b61586d9930840f2f1394092c079

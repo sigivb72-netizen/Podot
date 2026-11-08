@@ -1,0 +1,1652 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sigivb72-netizen <vergilx63@gmail.com>
+Date: Sun, 8 Nov 2026 10:25:05 +0000
+Subject: [PATCH 3/4] podot: ios: iPadOS editor platform integration
+
+- Enable editor builds' in-process instances; relaunch Main in-process
+  when the main loop quits (project manager -> editor -> game -> editor),
+  re-creating the rendering layer for the new rendering driver.
+- Floating native Stop control and F8 / Cmd+. to stop a running game;
+  recovery to the editor if iPadOS terminated the app while a game ran.
+- Mouse/trackpad support: buttons, hover, scroll (pan gesture), pinch
+  (magnify), pointer shapes from the cursor shape.
+- Apple Pencil as a precise mouse with pressure/tilt in the editor
+  (opt-in for projects: input_devices/pointing/ios/pencil_as_mouse).
+- Hardware keyboard: key repeat, connection change notifications.
+- Native file dialogs through UIDocumentPickerViewController with
+  persisted security-scoped bookmarks.
+- Open folders in the Files app (shareddocuments://).
+---
+ .../display_server_apple_embedded.h           |  29 ++-
+ .../display_server_apple_embedded.mm          |  18 +-
+ .../display_server_apple_embedded_pointer.mm  | 180 +++++++++++++
+ .../godot_view_apple_embedded.h               |   6 +
+ .../godot_view_apple_embedded.mm              | 246 +++++++++++++++++-
+ .../apple_embedded/godot_view_controller.mm   | 124 ++++++---
+ drivers/apple_embedded/godot_view_renderer.h  |   2 +
+ drivers/apple_embedded/godot_view_renderer.mm |  13 +-
+ drivers/apple_embedded/os_apple_embedded.h    |  10 +
+ platform/ios/SCsub                            |   2 +
+ platform/ios/display_server_ios.h             |   3 +
+ platform/ios/display_server_ios.mm            |  22 ++
+ platform/ios/ios_document_picker.h            |  47 ++++
+ platform/ios/ios_document_picker.mm           | 205 +++++++++++++++
+ platform/ios/ipados_editor_support.h          |  53 ++++
+ platform/ios/ipados_editor_support.mm         | 155 +++++++++++
+ platform/ios/main_ios.mm                      |  41 +++
+ platform/ios/os_ios.h                         |  12 +
+ platform/ios/os_ios.mm                        | 115 ++++++++
+ 19 files changed, 1246 insertions(+), 37 deletions(-)
+ create mode 100644 drivers/apple_embedded/display_server_apple_embedded_pointer.mm
+ create mode 100644 platform/ios/ios_document_picker.h
+ create mode 100644 platform/ios/ios_document_picker.mm
+ create mode 100644 platform/ios/ipados_editor_support.h
+ create mode 100644 platform/ios/ipados_editor_support.mm
+
+diff --git a/drivers/apple_embedded/display_server_apple_embedded.h b/drivers/apple_embedded/display_server_apple_embedded.h
+index f8efc73..ff12779 100644
+--- a/drivers/apple_embedded/display_server_apple_embedded.h
++++ b/drivers/apple_embedded/display_server_apple_embedded.h
+@@ -85,6 +85,15 @@ class DisplayServerAppleEmbedded : public DisplayServer {
+ 
+ 	int virtual_keyboard_height = 0;
+ 
++	// Indirect pointer (mouse / trackpad) and Apple Pencil state.
++	Point2i mouse_position;
++	BitField<MouseButtonMask> mouse_button_mask = MouseButtonMask::NONE;
++	DisplayServerEnums::CursorShape cursor_shape = DisplayServerEnums::CURSOR_ARROW;
++	Callable hardware_keyboard_connection_change_callback;
++	id hardware_keyboard_observer_connect = nil;
++	id hardware_keyboard_observer_disconnect = nil;
++	void _apply_modifiers(const Ref<InputEventWithModifiers> &p_event, NSInteger p_modifier) const;
++
+ 	void perform_event(const Ref<InputEvent> &p_event);
+ 
+ 	void initialize_tts() const;
+@@ -135,9 +144,27 @@ public:
+ 	void touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt);
+ 	void touches_canceled(int p_idx);
+ 
++	// MARK: Indirect pointer (mouse, trackpad) and Apple Pencil
++	// Positions are in pixels (points * contentScaleFactor). Pencil input is reported through these
++	// as well when `pencil_as_mouse` is enabled (the default in the editor and project manager).
++
++	bool pencil_as_mouse = false;
++	void pointer_motion(const Point2 &p_position, float p_pressure, const Vector2 &p_tilt, bool p_pen, NSInteger p_modifier);
++	void pointer_button(const Point2 &p_position, MouseButton p_button, bool p_pressed, bool p_double_click, float p_pressure, NSInteger p_modifier);
++	void pointer_release_all(const Point2 &p_position, NSInteger p_modifier);
++	void pointer_scroll(const Point2 &p_position, const Vector2 &p_delta, NSInteger p_modifier);
++	void pointer_magnify(const Point2 &p_position, float p_factor, NSInteger p_modifier);
++	void hardware_keyboard_connection_changed(bool p_connected);
++
++	virtual Point2i mouse_get_position() const override;
++	virtual BitField<MouseButtonMask> mouse_get_button_state() const override;
++	virtual void cursor_set_shape(DisplayServerEnums::CursorShape p_shape) override;
++	virtual DisplayServerEnums::CursorShape cursor_get_shape() const override;
++	virtual void set_hardware_keyboard_connection_change_callback(const Callable &p_callable) override;
++
+ 	// MARK: Keyboard
+ 
+-	void key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, NSInteger p_modifier, bool p_pressed, KeyLocation p_location);
++	void key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, NSInteger p_modifier, bool p_pressed, KeyLocation p_location, bool p_echo = false);
+ 	bool is_keyboard_active() const;
+ 
+ 	// MARK: Motion
+diff --git a/drivers/apple_embedded/display_server_apple_embedded.mm b/drivers/apple_embedded/display_server_apple_embedded.mm
+index fc116e4..f9699cd 100644
+--- a/drivers/apple_embedded/display_server_apple_embedded.mm
++++ b/drivers/apple_embedded/display_server_apple_embedded.mm
+@@ -180,6 +180,15 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
+ }
+ 
+ DisplayServerAppleEmbedded::~DisplayServerAppleEmbedded() {
++	if (hardware_keyboard_observer_connect) {
++		[[NSNotificationCenter defaultCenter] removeObserver:hardware_keyboard_observer_connect];
++		hardware_keyboard_observer_connect = nil;
++	}
++	if (hardware_keyboard_observer_disconnect) {
++		[[NSNotificationCenter defaultCenter] removeObserver:hardware_keyboard_observer_disconnect];
++		hardware_keyboard_observer_disconnect = nil;
++	}
++
+ 	if (native_menu) {
+ 		memdelete(native_menu);
+ 		native_menu = nullptr;
+@@ -307,10 +316,10 @@ void DisplayServerAppleEmbedded::touches_canceled(int p_idx) {
+ 
+ // MARK: Keyboard
+ 
+-void DisplayServerAppleEmbedded::key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, NSInteger p_modifier, bool p_pressed, KeyLocation p_location) {
++void DisplayServerAppleEmbedded::key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, NSInteger p_modifier, bool p_pressed, KeyLocation p_location, bool p_echo) {
+ 	Ref<InputEventKey> ev;
+ 	ev.instantiate();
+-	ev->set_echo(false);
++	ev->set_echo(p_echo);
+ 	ev->set_pressed(p_pressed);
+ 	ev->set_keycode(fix_keycode(p_char, p_key));
+ 	if (@available(iOS 13.4, *)) {
+@@ -375,6 +384,11 @@ bool DisplayServerAppleEmbedded::has_feature(DisplayServerEnums::Feature p_featu
+ 		// case DisplayServerEnums::FEATURE_NATIVE_DIALOG_FILE_MIME:
+ 		// case DisplayServerEnums::FEATURE_NATIVE_ICON:
+ 		// case DisplayServerEnums::FEATURE_WINDOW_TRANSPARENCY:
++#if defined(IOS_ENABLED)
++		case DisplayServerEnums::FEATURE_MOUSE:
++		case DisplayServerEnums::FEATURE_CURSOR_SHAPE:
++		case DisplayServerEnums::FEATURE_NATIVE_DIALOG_FILE:
++#endif
+ 		case DisplayServerEnums::FEATURE_CLIPBOARD:
+ 		case DisplayServerEnums::FEATURE_HDR_OUTPUT:
+ 		case DisplayServerEnums::FEATURE_KEEP_SCREEN_ON:
+diff --git a/drivers/apple_embedded/display_server_apple_embedded_pointer.mm b/drivers/apple_embedded/display_server_apple_embedded_pointer.mm
+new file mode 100644
+index 0000000..2c7d6a5
+--- /dev/null
++++ b/drivers/apple_embedded/display_server_apple_embedded_pointer.mm
+@@ -0,0 +1,180 @@
++/**************************************************************************/
++/*  display_server_apple_embedded_pointer.mm                              */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++// Mouse, trackpad and Apple Pencil support for the embedded Apple platforms.
++// UIKit reports these devices through UITouch (UITouchTypeIndirectPointer, UITouchTypePencil) and
++// gesture recognizers; GDTView forwards them here and they are turned into regular Godot mouse
++// events, so that desktop-oriented UIs (such as the editor) work with them as on desktop.
++
++#import "display_server_apple_embedded.h"
++
++#include "core/input/input.h"
++#import "drivers/apple_embedded/app_delegate_service.h"
++#import "drivers/apple_embedded/godot_view_apple_embedded.h"
++#import "drivers/apple_embedded/godot_view_controller.h"
++
++#import <GameController/GameController.h>
++#import <UIKit/UIKit.h>
++
++void DisplayServerAppleEmbedded::_apply_modifiers(const Ref<InputEventWithModifiers> &p_event, NSInteger p_modifier) const {
++	if (@available(iOS 13.4, *)) {
++		p_event->set_shift_pressed(p_modifier & UIKeyModifierShift);
++		p_event->set_ctrl_pressed(p_modifier & UIKeyModifierControl);
++		p_event->set_alt_pressed(p_modifier & UIKeyModifierAlternate);
++		p_event->set_meta_pressed(p_modifier & UIKeyModifierCommand);
++	}
++}
++
++void DisplayServerAppleEmbedded::pointer_motion(const Point2 &p_position, float p_pressure, const Vector2 &p_tilt, bool p_pen, NSInteger p_modifier) {
++	const Point2i previous = mouse_position;
++	mouse_position = p_position;
++
++	Ref<InputEventMouseMotion> ev;
++	ev.instantiate();
++	_apply_modifiers(ev, p_modifier);
++	ev->set_button_mask(mouse_button_mask);
++	ev->set_position(p_position);
++	ev->set_global_position(p_position);
++	ev->set_relative(p_position - Point2(previous));
++	ev->set_relative_screen_position(ev->get_relative());
++	ev->set_pressure(p_pressure);
++	ev->set_tilt(p_tilt);
++	if (Input::get_singleton()) {
++		ev->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
++		ev->set_screen_velocity(ev->get_velocity());
++	}
++	perform_event(ev);
++}
++
++void DisplayServerAppleEmbedded::pointer_button(const Point2 &p_position, MouseButton p_button, bool p_pressed, bool p_double_click, float p_pressure, NSInteger p_modifier) {
++	mouse_position = p_position;
++	if (p_pressed) {
++		mouse_button_mask.set_flag(mouse_button_to_mask(p_button));
++	} else {
++		mouse_button_mask.clear_flag(mouse_button_to_mask(p_button));
++	}
++
++	Ref<InputEventMouseButton> ev;
++	ev.instantiate();
++	_apply_modifiers(ev, p_modifier);
++	ev->set_button_index(p_button);
++	ev->set_pressed(p_pressed);
++	ev->set_double_click(p_double_click && p_pressed);
++	ev->set_button_mask(mouse_button_mask);
++	ev->set_position(p_position);
++	ev->set_global_position(p_position);
++	perform_event(ev);
++}
++
++void DisplayServerAppleEmbedded::pointer_release_all(const Point2 &p_position, NSInteger p_modifier) {
++	const MouseButton buttons[] = { MouseButton::LEFT, MouseButton::RIGHT, MouseButton::MIDDLE };
++	for (MouseButton button : buttons) {
++		if (mouse_button_mask.has_flag(mouse_button_to_mask(button))) {
++			pointer_button(p_position, button, false, false, 0.0, p_modifier);
++		}
++	}
++}
++
++void DisplayServerAppleEmbedded::pointer_scroll(const Point2 &p_position, const Vector2 &p_delta, NSInteger p_modifier) {
++	mouse_position = p_position;
++
++	// Same scale as precise (trackpad) scrolling on macOS.
++	Ref<InputEventPanGesture> ev;
++	ev.instantiate();
++	_apply_modifiers(ev, p_modifier);
++	ev->set_position(p_position);
++	ev->set_delta(p_delta * 0.03);
++	perform_event(ev);
++}
++
++void DisplayServerAppleEmbedded::pointer_magnify(const Point2 &p_position, float p_factor, NSInteger p_modifier) {
++	Ref<InputEventMagnifyGesture> ev;
++	ev.instantiate();
++	_apply_modifiers(ev, p_modifier);
++	ev->set_position(p_position);
++	ev->set_factor(p_factor);
++	perform_event(ev);
++}
++
++Point2i DisplayServerAppleEmbedded::mouse_get_position() const {
++	return mouse_position;
++}
++
++BitField<MouseButtonMask> DisplayServerAppleEmbedded::mouse_get_button_state() const {
++	return mouse_button_mask;
++}
++
++void DisplayServerAppleEmbedded::cursor_set_shape(DisplayServerEnums::CursorShape p_shape) {
++	ERR_FAIL_INDEX(p_shape, DisplayServerEnums::CURSOR_MAX);
++	if (cursor_shape == p_shape) {
++		return;
++	}
++	cursor_shape = p_shape;
++#if defined(IOS_ENABLED)
++	[GDTAppDelegateService.viewController.godotView pointerShapeChanged];
++#endif
++}
++
++DisplayServerEnums::CursorShape DisplayServerAppleEmbedded::cursor_get_shape() const {
++	return cursor_shape;
++}
++
++void DisplayServerAppleEmbedded::set_hardware_keyboard_connection_change_callback(const Callable &p_callable) {
++	hardware_keyboard_connection_change_callback = p_callable;
++
++	if (@available(iOS 14.0, *)) {
++		if (!hardware_keyboard_observer_connect) {
++			hardware_keyboard_observer_connect = [[NSNotificationCenter defaultCenter]
++					addObserverForName:GCKeyboardDidConnectNotification
++								object:nil
++								 queue:[NSOperationQueue mainQueue]
++							usingBlock:^(NSNotification *notification) {
++								if (DisplayServerAppleEmbedded::get_singleton()) {
++									DisplayServerAppleEmbedded::get_singleton()->hardware_keyboard_connection_changed(true);
++								}
++							}];
++			hardware_keyboard_observer_disconnect = [[NSNotificationCenter defaultCenter]
++					addObserverForName:GCKeyboardDidDisconnectNotification
++								object:nil
++								 queue:[NSOperationQueue mainQueue]
++							usingBlock:^(NSNotification *notification) {
++								if (DisplayServerAppleEmbedded::get_singleton()) {
++									DisplayServerAppleEmbedded::get_singleton()->hardware_keyboard_connection_changed(false);
++								}
++							}];
++		}
++	}
++}
++
++void DisplayServerAppleEmbedded::hardware_keyboard_connection_changed(bool p_connected) {
++	if (hardware_keyboard_connection_change_callback.is_valid()) {
++		hardware_keyboard_connection_change_callback.call_deferred(p_connected);
++	}
++}
+diff --git a/drivers/apple_embedded/godot_view_apple_embedded.h b/drivers/apple_embedded/godot_view_apple_embedded.h
+index 7d5d161..292242d 100644
+--- a/drivers/apple_embedded/godot_view_apple_embedded.h
++++ b/drivers/apple_embedded/godot_view_apple_embedded.h
+@@ -66,6 +66,12 @@ class String;
+ - (void)startRendering;
+ - (void)stopRendering;
+ 
++// Called by the display server when the cursor shape changes (updates the iPadOS pointer style).
++- (void)pointerShapeChanged;
++// Detaches the rendering layer so that a new one can be created for another rendering driver
++// (used when Main is set up again in the same process, e.g. editor -> game -> editor).
++- (void)releaseRenderingLayer;
++
+ @end
+ 
+ // Implemented in subclasses
+diff --git a/drivers/apple_embedded/godot_view_apple_embedded.mm b/drivers/apple_embedded/godot_view_apple_embedded.mm
+index ffd22c3..608c944 100644
+--- a/drivers/apple_embedded/godot_view_apple_embedded.mm
++++ b/drivers/apple_embedded/godot_view_apple_embedded.mm
+@@ -45,6 +45,11 @@ static const float earth_gravity = 9.80665;
+ @interface GDTView () {
+ 	UITouch *godot_touches[max_touches];
+ 	CGFloat last_edr_headroom;
++	// Touches reported as mouse buttons (indirect pointer / Apple Pencil) -> MouseButton.
++	NSMapTable<UITouch *, NSNumber *> *pointer_touch_button;
++	id pointer_interaction;
++	CGPoint last_scroll_translation;
++	CGFloat last_pinch_scale;
+ }
+ 
+ @property(assign, nonatomic) BOOL isActive;
+@@ -132,6 +137,7 @@ static const float earth_gravity = 9.80665;
+ 	}
+ 
+ 	[self initTouches];
++	[self initPointerInput];
+ 
+ 	self.multipleTouchEnabled = YES;
+ 
+@@ -353,44 +359,276 @@ static const float earth_gravity = 9.80665;
+ 	}
+ }
+ 
++// Returns true if this touch is reported as a mouse (indirect pointer, or Apple Pencil when
++// pencil_as_mouse is enabled) instead of a screen touch.
++- (BOOL)isPointerTouch:(UITouch *)touch {
++	if (@available(iOS 13.4, *)) {
++		if (touch.type == UITouchTypeIndirectPointer) {
++			return YES;
++		}
++	}
++	if (touch.type == UITouchTypePencil && DisplayServerAppleEmbedded::get_singleton() && DisplayServerAppleEmbedded::get_singleton()->pencil_as_mouse) {
++		return YES;
++	}
++	return NO;
++}
++
++- (Point2)pixelPositionForTouch:(UITouch *)touch {
++	CGPoint point;
++	if (@available(iOS 13.4, *)) {
++		point = [touch preciseLocationInView:self];
++	} else {
++		point = [touch locationInView:self];
++	}
++	return Point2(point.x * self.contentScaleFactor, point.y * self.contentScaleFactor);
++}
++
++- (float)pressureForTouch:(UITouch *)touch {
++	if (touch.type == UITouchTypePencil && touch.maximumPossibleForce > 0) {
++		return touch.force / touch.maximumPossibleForce;
++	}
++	return 1.0;
++}
++
++- (Vector2)tiltForTouch:(UITouch *)touch {
++	if (touch.type != UITouchTypePencil) {
++		return Vector2();
++	}
++	CGFloat alt = [touch altitudeAngle];
++	CGVector azim = [touch azimuthUnitVectorInView:self];
++	return Vector2(azim.dx, azim.dy) * Math::cos(alt);
++}
++
++- (MouseButton)mouseButtonForTouch:(UITouch *)touch event:(UIEvent *)event {
++	if (@available(iOS 13.4, *)) {
++		if (touch.type == UITouchTypeIndirectPointer) {
++			const UIEventButtonMask mask = event.buttonMask;
++			if (mask & UIEventButtonMaskSecondary) {
++				return MouseButton::RIGHT;
++			}
++			if (mask & UIEventButtonMaskForButtonNumber(3)) {
++				return MouseButton::MIDDLE;
++			}
++		}
++	}
++	return MouseButton::LEFT;
++}
++
++- (NSInteger)modifierFlagsForEvent:(UIEvent *)event {
++	if (@available(iOS 13.4, *)) {
++		return event.modifierFlags;
++	}
++	return 0;
++}
++
+ - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
++	DisplayServerAppleEmbedded *ds = DisplayServerAppleEmbedded::get_singleton();
++	if (!ds) {
++		return;
++	}
+ 	for (UITouch *touch in touches) {
++		if ([self isPointerTouch:touch]) {
++			const Point2 pos = [self pixelPositionForTouch:touch];
++			const NSInteger mods = [self modifierFlagsForEvent:event];
++			const MouseButton button = [self mouseButtonForTouch:touch event:event];
++			ds->pointer_motion(pos, [self pressureForTouch:touch], [self tiltForTouch:touch], touch.type == UITouchTypePencil, mods);
++			ds->pointer_button(pos, button, true, touch.tapCount > 1, [self pressureForTouch:touch], mods);
++			[pointer_touch_button setObject:@((int)button) forKey:touch];
++			continue;
++		}
+ 		int tid = [self getTouchIDForTouch:touch];
+ 		ERR_FAIL_COND(tid == -1);
+ 		CGPoint touchPoint = [touch locationInView:self];
+-		DisplayServerAppleEmbedded::get_singleton()->touch_press(tid, touchPoint.x * self.contentScaleFactor, touchPoint.y * self.contentScaleFactor, true, touch.tapCount > 1);
++		ds->touch_press(tid, touchPoint.x * self.contentScaleFactor, touchPoint.y * self.contentScaleFactor, true, touch.tapCount > 1);
+ 	}
+ }
+ 
+ - (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
++	DisplayServerAppleEmbedded *ds = DisplayServerAppleEmbedded::get_singleton();
++	if (!ds) {
++		return;
++	}
+ 	for (UITouch *touch in touches) {
++		if ([self isPointerTouch:touch]) {
++			ds->pointer_motion([self pixelPositionForTouch:touch], [self pressureForTouch:touch], [self tiltForTouch:touch], touch.type == UITouchTypePencil, [self modifierFlagsForEvent:event]);
++			continue;
++		}
+ 		int tid = [self getTouchIDForTouch:touch];
+ 		ERR_FAIL_COND(tid == -1);
+ 		CGPoint touchPoint = [touch locationInView:self];
+ 		CGPoint prev_point = [touch previousLocationInView:self];
+ 		CGFloat alt = [touch altitudeAngle];
+ 		CGVector azim = [touch azimuthUnitVectorInView:self];
+-		DisplayServerAppleEmbedded::get_singleton()->touch_drag(tid, prev_point.x * self.contentScaleFactor, prev_point.y * self.contentScaleFactor, touchPoint.x * self.contentScaleFactor, touchPoint.y * self.contentScaleFactor, [touch force] / [touch maximumPossibleForce], Vector2(azim.dx, azim.dy) * Math::cos(alt));
++		ds->touch_drag(tid, prev_point.x * self.contentScaleFactor, prev_point.y * self.contentScaleFactor, touchPoint.x * self.contentScaleFactor, touchPoint.y * self.contentScaleFactor, [touch force] / [touch maximumPossibleForce], Vector2(azim.dx, azim.dy) * Math::cos(alt));
+ 	}
+ }
+ 
+ - (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
++	DisplayServerAppleEmbedded *ds = DisplayServerAppleEmbedded::get_singleton();
++	if (!ds) {
++		return;
++	}
+ 	for (UITouch *touch in touches) {
++		NSNumber *button = [pointer_touch_button objectForKey:touch];
++		if (button) {
++			const Point2 pos = [self pixelPositionForTouch:touch];
++			ds->pointer_motion(pos, 0.0, [self tiltForTouch:touch], touch.type == UITouchTypePencil, [self modifierFlagsForEvent:event]);
++			ds->pointer_button(pos, (MouseButton)button.intValue, false, false, 0.0, [self modifierFlagsForEvent:event]);
++			[pointer_touch_button removeObjectForKey:touch];
++			continue;
++		}
+ 		int tid = [self getTouchIDForTouch:touch];
+ 		ERR_FAIL_COND(tid == -1);
+ 		[self removeTouch:touch];
+ 		CGPoint touchPoint = [touch locationInView:self];
+-		DisplayServerAppleEmbedded::get_singleton()->touch_press(tid, touchPoint.x * self.contentScaleFactor, touchPoint.y * self.contentScaleFactor, false, false);
++		ds->touch_press(tid, touchPoint.x * self.contentScaleFactor, touchPoint.y * self.contentScaleFactor, false, false);
+ 	}
+ }
+ 
+ - (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event {
++	DisplayServerAppleEmbedded *ds = DisplayServerAppleEmbedded::get_singleton();
++	if (!ds) {
++		return;
++	}
+ 	for (UITouch *touch in touches) {
++		NSNumber *button = [pointer_touch_button objectForKey:touch];
++		if (button) {
++			ds->pointer_button([self pixelPositionForTouch:touch], (MouseButton)button.intValue, false, false, 0.0, 0);
++			[pointer_touch_button removeObjectForKey:touch];
++			continue;
++		}
+ 		int tid = [self getTouchIDForTouch:touch];
+ 		ERR_FAIL_COND(tid == -1);
+-		DisplayServerAppleEmbedded::get_singleton()->touches_canceled(tid);
++		ds->touches_canceled(tid);
++	}
++	[self clearTouches];
++}
++
++// MARK: Pointer gestures (hover, scroll, pinch) and pointer shape
++
++- (void)initPointerInput {
++	pointer_touch_button = [NSMapTable weakToStrongObjectsMapTable];
++#if defined(IOS_ENABLED)
++	if (@available(iOS 13.4, *)) {
++		// Mouse / trackpad hover and Apple Pencil hover (on supported iPads).
++		UIHoverGestureRecognizer *hover = [[UIHoverGestureRecognizer alloc] initWithTarget:self action:@selector(handleHover:)];
++		hover.cancelsTouchesInView = NO;
++		[self addGestureRecognizer:hover];
++
++		// Scroll wheel and two-finger trackpad scrolling. No touch types are allowed, so it never
++		// interferes with touches on the screen.
++		UIPanGestureRecognizer *scroll = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleScroll:)];
++		scroll.allowedScrollTypesMask = UIScrollTypeMaskAll;
++		scroll.allowedTouchTypes = @[];
++		scroll.cancelsTouchesInView = NO;
++		scroll.maximumNumberOfTouches = 0;
++		[self addGestureRecognizer:scroll];
++
++		// Trackpad pinch. Screen pinches are handled by Godot itself from the raw touches.
++		UIPinchGestureRecognizer *pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinch:)];
++		pinch.allowedTouchTypes = @[ @(UITouchTypeIndirectPointer) ];
++		pinch.cancelsTouchesInView = NO;
++		[self addGestureRecognizer:pinch];
++
++		pointer_interaction = [[UIPointerInteraction alloc] initWithDelegate:(id<UIPointerInteractionDelegate>)self];
++		[self addInteraction:pointer_interaction];
++	}
++#endif
++}
++
++#if defined(IOS_ENABLED)
++- (void)handleHover:(UIHoverGestureRecognizer *)recognizer API_AVAILABLE(ios(13.4)) {
++	DisplayServerAppleEmbedded *ds = DisplayServerAppleEmbedded::get_singleton();
++	if (!ds || pointer_touch_button.count > 0) {
++		return;
++	}
++	if (recognizer.state == UIGestureRecognizerStateBegan || recognizer.state == UIGestureRecognizerStateChanged) {
++		CGPoint point = [recognizer locationInView:self];
++		ds->pointer_motion(Point2(point.x * self.contentScaleFactor, point.y * self.contentScaleFactor), 0.0, Vector2(), false, recognizer.modifierFlags);
++	}
++}
++
++- (void)handleScroll:(UIPanGestureRecognizer *)recognizer API_AVAILABLE(ios(13.4)) {
++	DisplayServerAppleEmbedded *ds = DisplayServerAppleEmbedded::get_singleton();
++	if (!ds) {
++		return;
++	}
++	if (recognizer.state == UIGestureRecognizerStateBegan) {
++		last_scroll_translation = CGPointZero;
++	}
++	if (recognizer.state == UIGestureRecognizerStateBegan || recognizer.state == UIGestureRecognizerStateChanged) {
++		CGPoint translation = [recognizer translationInView:self];
++		CGPoint delta = CGPointMake(translation.x - last_scroll_translation.x, translation.y - last_scroll_translation.y);
++		last_scroll_translation = translation;
++		CGPoint point = [recognizer locationInView:self];
++		// Content follows the fingers on iPadOS (natural scrolling), Godot expects the scroll direction.
++		ds->pointer_scroll(Point2(point.x * self.contentScaleFactor, point.y * self.contentScaleFactor), Vector2(-delta.x, -delta.y) * self.contentScaleFactor, recognizer.modifierFlags);
++	}
++}
++
++- (void)handlePinch:(UIPinchGestureRecognizer *)recognizer API_AVAILABLE(ios(13.4)) {
++	DisplayServerAppleEmbedded *ds = DisplayServerAppleEmbedded::get_singleton();
++	if (!ds) {
++		return;
++	}
++	if (recognizer.state == UIGestureRecognizerStateBegan) {
++		last_pinch_scale = 1.0;
++	}
++	if ((recognizer.state == UIGestureRecognizerStateBegan || recognizer.state == UIGestureRecognizerStateChanged) && last_pinch_scale > 0.0) {
++		CGPoint point = [recognizer locationInView:self];
++		ds->pointer_magnify(Point2(point.x * self.contentScaleFactor, point.y * self.contentScaleFactor), recognizer.scale / last_pinch_scale, recognizer.modifierFlags);
++		last_pinch_scale = recognizer.scale;
++	}
++}
++
++- (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction styleForRegion:(UIPointerRegion *)region API_AVAILABLE(ios(13.4)) {
++	DisplayServerAppleEmbedded *ds = DisplayServerAppleEmbedded::get_singleton();
++	if (!ds) {
++		return nil;
++	}
++	switch (ds->cursor_get_shape()) {
++		case DisplayServerEnums::CURSOR_IBEAM:
++			return [UIPointerStyle styleWithShape:[UIPointerShape beamWithPreferredLength:20 axis:UIAxisVertical] constrainedAxes:UIAxisNeither];
++		case DisplayServerEnums::CURSOR_VSIZE:
++		case DisplayServerEnums::CURSOR_VSPLIT:
++			return [UIPointerStyle styleWithShape:[UIPointerShape beamWithPreferredLength:16 axis:UIAxisHorizontal] constrainedAxes:UIAxisNeither];
++		case DisplayServerEnums::CURSOR_HSIZE:
++		case DisplayServerEnums::CURSOR_HSPLIT:
++			return [UIPointerStyle styleWithShape:[UIPointerShape beamWithPreferredLength:16 axis:UIAxisVertical] constrainedAxes:UIAxisNeither];
++		case DisplayServerEnums::CURSOR_CROSS:
++		case DisplayServerEnums::CURSOR_MOVE:
++		case DisplayServerEnums::CURSOR_DRAG:
++			return [UIPointerStyle styleWithShape:[UIPointerShape shapeWithRoundedRect:CGRectMake(0, 0, 6, 6) cornerRadius:3] constrainedAxes:UIAxisNeither];
++		default:
++			return nil; // System default pointer.
++	}
++}
++
++- (UIPointerRegion *)pointerInteraction:(UIPointerInteraction *)interaction regionForRequest:(UIPointerRegionRequest *)request defaultRegion:(UIPointerRegion *)defaultRegion API_AVAILABLE(ios(13.4)) {
++	// A small region around the pointer, identified by the cursor shape, so that the style is
++	// re-evaluated whenever Godot changes the cursor shape.
++	DisplayServerAppleEmbedded *ds = DisplayServerAppleEmbedded::get_singleton();
++	const int shape = ds ? (int)ds->cursor_get_shape() : 0;
++	return [UIPointerRegion regionWithRect:CGRectMake(request.location.x - 1, request.location.y - 1, 2, 2) identifier:@(shape)];
++}
++#endif
++
++- (void)pointerShapeChanged {
++#if defined(IOS_ENABLED)
++	if (@available(iOS 13.4, *)) {
++		[(UIPointerInteraction *)pointer_interaction invalidate];
++	}
++#endif
++}
++
++- (void)releaseRenderingLayer {
++	if (self.renderingLayer) {
++		[self.renderingLayer removeFromSuperlayer];
++		self.renderingLayer = nil;
+ 	}
++	self.delegateDidFinishSetUp = NO;
+ 	[self clearTouches];
++	[pointer_touch_button removeAllObjects];
+ }
+ 
+ // MARK: Motion
+diff --git a/drivers/apple_embedded/godot_view_controller.mm b/drivers/apple_embedded/godot_view_controller.mm
+index a1866bc..9bda436 100644
+--- a/drivers/apple_embedded/godot_view_controller.mm
++++ b/drivers/apple_embedded/godot_view_controller.mm
+@@ -50,6 +50,9 @@
+ 
+ @property(strong, nonatomic) UIView *godotLoadingOverlay;
+ 
++@property(strong, nonatomic) NSTimer *keyRepeatTimer;
++@property(strong, nonatomic) UIPress *keyRepeatPress;
++
+ @end
+ 
+ @implementation GDTViewController
+@@ -58,6 +61,65 @@
+ 	return (GDTView *)self.view;
+ }
+ 
++// MARK: Hardware keyboard
++
++// UIKit does not report key repeats, so they are generated here for held keys (needed for text
++// editing and for navigating with the arrow keys).
++static const NSTimeInterval key_repeat_delay = 0.4;
++static const NSTimeInterval key_repeat_interval = 0.05;
++
++static bool _is_modifier_key(Key p_key) {
++	return p_key == Key::SHIFT || p_key == Key::CTRL || p_key == Key::ALT || p_key == Key::META || p_key == Key::CAPSLOCK;
++}
++
++- (void)stopKeyRepeat {
++	[self.keyRepeatTimer invalidate];
++	self.keyRepeatTimer = nil;
++	self.keyRepeatPress = nil;
++}
++
++- (void)sendPress:(UIPress *)press pressed:(BOOL)pressed echo:(BOOL)echo API_AVAILABLE(ios(13.4)) {
++	String u32lbl = String::utf8([press.key.charactersIgnoringModifiers UTF8String]);
++	String u32text = String::utf8([press.key.characters UTF8String]);
++	Key key = KeyMappingAppleEmbedded::remap_key(press.key.keyCode);
++
++	if (press.key.keyCode == 0 && u32text.is_empty() && u32lbl.is_empty()) {
++		return;
++	}
++
++	char32_t us = 0;
++	if (!u32lbl.is_empty() && !u32lbl.begins_with("UIKey")) {
++		us = u32lbl[0];
++	}
++
++	KeyLocation location = KeyMappingAppleEmbedded::key_location(press.key.keyCode);
++	// The modifier flags of the press itself are not updated while a key is held, use the current ones.
++	NSInteger modifiers = press.key.modifierFlags;
++
++	if (pressed && !u32text.is_empty() && !u32text.begins_with("UIKey")) {
++		for (int i = 0; i < u32text.length(); i++) {
++			const char32_t c = u32text[i];
++			DisplayServerAppleEmbedded::get_singleton()->key(fix_keycode(us, key), c, fix_key_label(us, key), key, modifiers, true, location, echo);
++		}
++	} else {
++		DisplayServerAppleEmbedded::get_singleton()->key(fix_keycode(us, key), 0, fix_key_label(us, key), key, modifiers, pressed, location, echo && pressed);
++	}
++}
++
++- (void)keyRepeatFired:(NSTimer *)timer {
++	if (!DisplayServerAppleEmbedded::get_singleton() || DisplayServerAppleEmbedded::get_singleton()->is_keyboard_active() || !self.keyRepeatPress) {
++		[self stopKeyRepeat];
++		return;
++	}
++	if (@available(iOS 13.4, *)) {
++		[self sendPress:self.keyRepeatPress pressed:YES echo:YES];
++	}
++	if (timer.timeInterval != key_repeat_interval) {
++		[self.keyRepeatTimer invalidate];
++		self.keyRepeatTimer = [NSTimer scheduledTimerWithTimeInterval:key_repeat_interval target:self selector:@selector(keyRepeatFired:) userInfo:nil repeats:YES];
++	}
++}
++
+ - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+ 	[super pressesBegan:presses withEvent:event];
+ 
+@@ -66,28 +128,19 @@
+ 	}
+ 	if (@available(iOS 13.4, *)) {
+ 		for (UIPress *press in presses) {
+-			String u32lbl = String::utf8([press.key.charactersIgnoringModifiers UTF8String]);
+-			String u32text = String::utf8([press.key.characters UTF8String]);
++			if (!press.key) {
++				continue;
++			}
+ 			Key key = KeyMappingAppleEmbedded::remap_key(press.key.keyCode);
+-
+-			if (press.key.keyCode == 0 && u32text.is_empty() && u32lbl.is_empty()) {
++			if (OS_AppleEmbedded::get_singleton()->handle_hardware_key_shortcut(key, press.key.modifierFlags)) {
+ 				continue;
+ 			}
++			[self sendPress:press pressed:YES echo:NO];
+ 
+-			char32_t us = 0;
+-			if (!u32lbl.is_empty() && !u32lbl.begins_with("UIKey")) {
+-				us = u32lbl[0];
+-			}
+-
+-			KeyLocation location = KeyMappingAppleEmbedded::key_location(press.key.keyCode);
+-
+-			if (!u32text.is_empty() && !u32text.begins_with("UIKey")) {
+-				for (int i = 0; i < u32text.length(); i++) {
+-					const char32_t c = u32text[i];
+-					DisplayServerAppleEmbedded::get_singleton()->key(fix_keycode(us, key), c, fix_key_label(us, key), key, press.key.modifierFlags, true, location);
+-				}
+-			} else {
+-				DisplayServerAppleEmbedded::get_singleton()->key(fix_keycode(us, key), 0, fix_key_label(us, key), key, press.key.modifierFlags, true, location);
++			if (!_is_modifier_key(key)) {
++				[self stopKeyRepeat];
++				self.keyRepeatPress = press;
++				self.keyRepeatTimer = [NSTimer scheduledTimerWithTimeInterval:key_repeat_delay target:self selector:@selector(keyRepeatFired:) userInfo:nil repeats:NO];
+ 			}
+ 		}
+ 	}
+@@ -96,26 +149,38 @@
+ - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+ 	[super pressesEnded:presses withEvent:event];
+ 
++	for (UIPress *press in presses) {
++		if (press == self.keyRepeatPress) {
++			[self stopKeyRepeat];
++		}
++	}
++
+ 	if (!DisplayServerAppleEmbedded::get_singleton() || DisplayServerAppleEmbedded::get_singleton()->is_keyboard_active()) {
+ 		return;
+ 	}
+ 	if (@available(iOS 13.4, *)) {
+ 		for (UIPress *press in presses) {
+-			String u32lbl = String::utf8([press.key.charactersIgnoringModifiers UTF8String]);
+-			Key key = KeyMappingAppleEmbedded::remap_key(press.key.keyCode);
+-
+-			if (press.key.keyCode == 0 && u32lbl.is_empty()) {
++			if (!press.key) {
+ 				continue;
+ 			}
++			[self sendPress:press pressed:NO echo:NO];
++		}
++	}
++}
+ 
+-			char32_t us = 0;
+-			if (!u32lbl.is_empty() && !u32lbl.begins_with("UIKey")) {
+-				us = u32lbl[0];
+-			}
+-
+-			KeyLocation location = KeyMappingAppleEmbedded::key_location(press.key.keyCode);
++- (void)pressesCancelled:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
++	[super pressesCancelled:presses withEvent:event];
++	[self stopKeyRepeat];
+ 
+-			DisplayServerAppleEmbedded::get_singleton()->key(fix_keycode(us, key), 0, fix_key_label(us, key), key, press.key.modifierFlags, false, location);
++	if (!DisplayServerAppleEmbedded::get_singleton() || DisplayServerAppleEmbedded::get_singleton()->is_keyboard_active()) {
++		return;
++	}
++	if (@available(iOS 13.4, *)) {
++		for (UIPress *press in presses) {
++			if (!press.key) {
++				continue;
++			}
++			[self sendPress:press pressed:NO echo:NO];
+ 		}
+ 	}
+ }
+@@ -228,6 +293,7 @@
+ }
+ 
+ - (void)dealloc {
++	[self stopKeyRepeat];
+ 	self.keyboardView = nil;
+ 
+ 	self.renderer = nil;
+diff --git a/drivers/apple_embedded/godot_view_renderer.h b/drivers/apple_embedded/godot_view_renderer.h
+index 1d409d9..2905d55 100644
+--- a/drivers/apple_embedded/godot_view_renderer.h
++++ b/drivers/apple_embedded/godot_view_renderer.h
+@@ -38,6 +38,8 @@
+ 
+ - (BOOL)setupView:(UIView *)view;
+ - (void)renderOnView:(UIView *)view;
++// Restarts the setup sequence (Main::setup2() then Main::start()) on the next frames.
++- (void)resetSetup;
+ 
+ @end
+ 
+diff --git a/drivers/apple_embedded/godot_view_renderer.mm b/drivers/apple_embedded/godot_view_renderer.mm
+index 60c6701..5642f22 100644
+--- a/drivers/apple_embedded/godot_view_renderer.mm
++++ b/drivers/apple_embedded/godot_view_renderer.mm
+@@ -113,7 +113,18 @@
+ 		return;
+ 	}
+ 
+-	OS_AppleEmbedded::get_singleton()->iterate();
++	if (OS_AppleEmbedded::get_singleton()->iterate()) {
++		if (OS_AppleEmbedded::get_singleton()->handle_main_loop_quit()) {
++			// Main was set up again in-process: run setup2() and start() again on the next frames.
++			[self resetSetup];
++		}
++	}
++}
++
++- (void)resetSetup {
++	self.hasFinishedProjectDataSetup = NO;
++	self.hasStartedMain = NO;
++	self.hasFinishedSetup = NO;
+ }
+ 
+ @end
+diff --git a/drivers/apple_embedded/os_apple_embedded.h b/drivers/apple_embedded/os_apple_embedded.h
+index d801a86..66fb07f 100644
+--- a/drivers/apple_embedded/os_apple_embedded.h
++++ b/drivers/apple_embedded/os_apple_embedded.h
+@@ -34,6 +34,7 @@
+ 
+ #import "drivers/apple_embedded/apple_embedded.h"
+ #import "drivers/coreaudio/audio_driver_coreaudio.h"
++#include "core/os/keyboard.h"
+ #include "drivers/unix/os_unix.h"
+ #include "servers/audio/audio_server.h"
+ #include "servers/rendering/renderer_compositor.h"
+@@ -97,6 +98,15 @@ public:
+ 
+ 	bool iterate();
+ 
++	// Called when the main loop asked to quit (Main::iteration() returned true). Returns true if the
++	// platform handled it, e.g. by setting Main up again in-process with the next queued instance
++	// (iPadOS editor: project manager -> editor -> game -> editor). The default keeps the upstream
++	// behavior, as iOS apps are not supposed to quit by themselves.
++	virtual bool handle_main_loop_quit() { return false; }
++	// Lets the platform intercept global hardware keyboard shortcuts (e.g. stopping a game that was
++	// started from the editor). Returns true if the key press was consumed.
++	virtual bool handle_hardware_key_shortcut(Key p_key, NSInteger p_modifiers) { return false; }
++
+ 	void start();
+ 
+ 	virtual void alert(const String &p_alert, const String &p_title = "ALERT!") override;
+diff --git a/platform/ios/SCsub b/platform/ios/SCsub
+index 92f6c17..37e02bc 100644
+--- a/platform/ios/SCsub
++++ b/platform/ios/SCsub
+@@ -12,6 +12,8 @@ ios_lib = [
+     "display_layer_ios.mm",
+     "display_server_ios.mm",
+     "godot_view_ios.mm",
++    "ios_document_picker.mm",
++    "ipados_editor_support.mm",
+     "main_ios.mm",
+     "os_ios.mm",
+ ]
+diff --git a/platform/ios/display_server_ios.h b/platform/ios/display_server_ios.h
+index 01f16b0..38e17a1 100644
+--- a/platform/ios/display_server_ios.h
++++ b/platform/ios/display_server_ios.h
+@@ -52,6 +52,9 @@ public:
+ 	virtual float screen_get_scale(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override;
+ 	virtual float screen_get_refresh_rate(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override;
+ 
++	virtual Error file_dialog_show(const String &p_title, const String &p_current_directory, const String &p_filename, bool p_show_hidden, DisplayServerEnums::FileDialogMode p_mode, const Vector<String> &p_filters, const Callable &p_callback, DisplayServerEnums::WindowID p_window_id = DisplayServerEnums::MAIN_WINDOW_ID) override;
++	virtual Error file_dialog_with_options_show(const String &p_title, const String &p_current_directory, const String &p_root, const String &p_filename, bool p_show_hidden, DisplayServerEnums::FileDialogMode p_mode, const Vector<String> &p_filters, const TypedArray<Dictionary> &p_options, const Callable &p_callback, DisplayServerEnums::WindowID p_window_id = DisplayServerEnums::MAIN_WINDOW_ID) override;
++
+ protected:
+ 	virtual bool _screen_hdr_is_supported() const override;
+ 	virtual float _screen_potential_edr_headroom() const override;
+diff --git a/platform/ios/display_server_ios.mm b/platform/ios/display_server_ios.mm
+index ee86f71..baf6178 100644
+--- a/platform/ios/display_server_ios.mm
++++ b/platform/ios/display_server_ios.mm
+@@ -31,6 +31,10 @@
+ #import "display_server_ios.h"
+ 
+ #import "device_metrics.h"
++#import "ios_document_picker.h"
++
++#include "core/config/engine.h"
++#include "core/config/project_settings.h"
+ 
+ #import <UIKit/UIKit.h>
+ #import <sys/utsname.h>
+@@ -43,6 +47,24 @@ DisplayServerIOS::DisplayServerIOS(const String &p_rendering_driver, DisplayServ
+ 		DisplayServerAppleEmbedded(p_rendering_driver, p_mode, p_vsync_mode, p_flags, p_position, p_resolution, p_screen, p_context, p_parent_window, r_error) {
+ 	// See: https://github.com/godotengine/godot/pull/106814#discussion_r2854262156 for why this was set to 203 nits.
+ 	hardware_reference_luminance_nits = 203.0f;
++
++	// Apple Pencil acts as a precise mouse in the editor and project manager (like on desktop),
++	// while projects get touch events with pressure and tilt unless they opt in.
++	pencil_as_mouse = GLOBAL_DEF("input_devices/pointing/ios/pencil_as_mouse", false);
++#ifdef TOOLS_ENABLED
++	if (Engine::get_singleton()->is_editor_hint() || Engine::get_singleton()->is_project_manager_hint()) {
++		pencil_as_mouse = true;
++	}
++#endif
++}
++
++Error DisplayServerIOS::file_dialog_show(const String &p_title, const String &p_current_directory, const String &p_filename, bool p_show_hidden, DisplayServerEnums::FileDialogMode p_mode, const Vector<String> &p_filters, const Callable &p_callback, DisplayServerEnums::WindowID p_window_id) {
++	return ios_document_picker_show(p_title, p_current_directory, p_mode, p_filters, p_callback, false);
++}
++
++Error DisplayServerIOS::file_dialog_with_options_show(const String &p_title, const String &p_current_directory, const String &p_root, const String &p_filename, bool p_show_hidden, DisplayServerEnums::FileDialogMode p_mode, const Vector<String> &p_filters, const TypedArray<Dictionary> &p_options, const Callable &p_callback, DisplayServerEnums::WindowID p_window_id) {
++	ERR_FAIL_COND_V_MSG(!p_options.is_empty(), ERR_UNAVAILABLE, "The iOS document picker does not support options.");
++	return ios_document_picker_show(p_title, p_current_directory, p_mode, p_filters, p_callback, true);
+ }
+ 
+ DisplayServerIOS::~DisplayServerIOS() {
+diff --git a/platform/ios/ios_document_picker.h b/platform/ios/ios_document_picker.h
+new file mode 100644
+index 0000000..22ecd04
+--- /dev/null
++++ b/platform/ios/ios_document_picker.h
+@@ -0,0 +1,47 @@
++/**************************************************************************/
++/*  ios_document_picker.h                                                 */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#pragma once
++
++#include "core/variant/callable.h"
++#include "core/string/ustring.h"
++#include "servers/display/display_server_enums.h"
++
++// System document picker (UIDocumentPickerViewController), used for DisplayServer::file_dialog_show().
++// Picked items outside of the app sandbox (iCloud Drive, external storage, other apps' folders) are
++// accessed through security-scoped URLs. Their bookmarks are persisted, so that the paths stay
++// accessible after the app is relaunched (e.g. a project opened from an external drive).
++Error ios_document_picker_show(const String &p_title, const String &p_current_directory, DisplayServerEnums::FileDialogMode p_mode, const Vector<String> &p_filters, const Callable &p_callback, bool p_options_in_callback);
++
++// Re-acquires access to all the persisted security-scoped bookmarks. Called once at startup.
++void ios_document_picker_restore_bookmarks();
++
++// Paths of the persisted security-scoped locations (for diagnostics and the project manager).
++Vector<String> ios_document_picker_get_bookmarked_paths();
+diff --git a/platform/ios/ios_document_picker.mm b/platform/ios/ios_document_picker.mm
+new file mode 100644
+index 0000000..ad09ba0
+--- /dev/null
++++ b/platform/ios/ios_document_picker.mm
+@@ -0,0 +1,205 @@
++/**************************************************************************/
++/*  ios_document_picker.mm                                                */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#import "ios_document_picker.h"
++
++#include "core/os/os.h"
++#include "core/variant/typed_array.h"
++#include "core/variant/dictionary.h"
++#import "drivers/apple_embedded/app_delegate_service.h"
++#import "drivers/apple_embedded/godot_view_controller.h"
++
++#import <UIKit/UIKit.h>
++#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
++
++static NSString *const GDTBookmarksDefaultsKey = @"godot_security_scoped_bookmarks";
++
++// URLs currently being accessed (kept for the whole app lifetime).
++static NSMutableArray<NSURL *> *gdt_accessed_urls = nil;
++
++static void _gdt_access_url(NSURL *p_url) {
++	if (!gdt_accessed_urls) {
++		gdt_accessed_urls = [NSMutableArray array];
++	}
++	for (NSURL *url in gdt_accessed_urls) {
++		if ([url.path isEqualToString:p_url.path]) {
++			return;
++		}
++	}
++	if ([p_url startAccessingSecurityScopedResource]) {
++		[gdt_accessed_urls addObject:p_url];
++	}
++}
++
++static void _gdt_store_bookmark(NSURL *p_url) {
++	NSError *error = nil;
++	NSData *data = [p_url bookmarkDataWithOptions:0 includingResourceValuesForKeys:nil relativeToURL:nil error:&error];
++	if (!data) {
++		print_verbose(vformat("Unable to create a bookmark for \"%s\": %s", String::utf8(p_url.path.UTF8String), String::utf8(error.localizedDescription.UTF8String)));
++		return;
++	}
++	NSMutableDictionary *bookmarks = [[[NSUserDefaults standardUserDefaults] dictionaryForKey:GDTBookmarksDefaultsKey] mutableCopy];
++	if (!bookmarks) {
++		bookmarks = [NSMutableDictionary dictionary];
++	}
++	bookmarks[p_url.path] = data;
++	[[NSUserDefaults standardUserDefaults] setObject:bookmarks forKey:GDTBookmarksDefaultsKey];
++}
++
++void ios_document_picker_restore_bookmarks() {
++	NSDictionary *bookmarks = [[NSUserDefaults standardUserDefaults] dictionaryForKey:GDTBookmarksDefaultsKey];
++	if (!bookmarks) {
++		return;
++	}
++	NSMutableDictionary *updated = [NSMutableDictionary dictionary];
++	for (NSString *path in bookmarks) {
++		NSData *data = bookmarks[path];
++		BOOL stale = NO;
++		NSError *error = nil;
++		NSURL *url = [NSURL URLByResolvingBookmarkData:data options:0 relativeToURL:nil bookmarkDataIsStale:&stale error:&error];
++		if (!url) {
++			// The location is gone (e.g. the external drive was removed); keep the bookmark for later.
++			updated[path] = data;
++			continue;
++		}
++		_gdt_access_url(url);
++		if (stale) {
++			NSData *fresh = [url bookmarkDataWithOptions:0 includingResourceValuesForKeys:nil relativeToURL:nil error:nil];
++			updated[url.path] = fresh ? fresh : data;
++		} else {
++			updated[url.path] = data;
++		}
++	}
++	[[NSUserDefaults standardUserDefaults] setObject:updated forKey:GDTBookmarksDefaultsKey];
++}
++
++Vector<String> ios_document_picker_get_bookmarked_paths() {
++	Vector<String> ret;
++	NSDictionary *bookmarks = [[NSUserDefaults standardUserDefaults] dictionaryForKey:GDTBookmarksDefaultsKey];
++	for (NSString *path in bookmarks) {
++		ret.push_back(String::utf8(path.UTF8String));
++	}
++	return ret;
++}
++
++@interface GDTDocumentPickerDelegate : NSObject <UIDocumentPickerDelegate> {
++@public
++	Callable callback;
++	BOOL options_in_callback;
++}
++@end
++
++static GDTDocumentPickerDelegate *gdt_active_picker_delegate = nil;
++
++@implementation GDTDocumentPickerDelegate
++
++- (void)finishWithStatus:(bool)p_status paths:(const Vector<String> &)p_paths {
++	if (callback.is_valid()) {
++		if (options_in_callback) {
++			callback.call_deferred(p_status, p_paths, 0, Dictionary());
++		} else {
++			callback.call_deferred(p_status, p_paths, 0);
++		}
++	}
++	gdt_active_picker_delegate = nil;
++}
++
++- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
++	Vector<String> paths;
++	for (NSURL *url in urls) {
++		_gdt_access_url(url);
++		_gdt_store_bookmark(url);
++		paths.push_back(String::utf8(url.path.UTF8String));
++	}
++	[self finishWithStatus:!paths.is_empty() paths:paths];
++}
++
++- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
++	[self finishWithStatus:false paths:Vector<String>()];
++}
++
++@end
++
++static NSArray<UTType *> *_gdt_content_types(DisplayServerEnums::FileDialogMode p_mode, const Vector<String> &p_filters) API_AVAILABLE(ios(14.0)) {
++	if (p_mode == DisplayServerEnums::FILE_DIALOG_MODE_OPEN_DIR) {
++		return @[ UTTypeFolder ];
++	}
++	NSMutableArray<UTType *> *types = [NSMutableArray array];
++	bool any = p_filters.is_empty();
++	for (const String &filter : p_filters) {
++		// Filters are formatted as "*.png, *.jpg ; Description" (the description is optional).
++		const String patterns = filter.get_slicec(';', 0);
++		for (const String &pattern : patterns.split(",", false)) {
++			const String ext = pattern.strip_edges().trim_prefix("*.");
++			if (ext.is_empty() || ext == "*") {
++				any = true;
++				continue;
++			}
++			UTType *type = [UTType typeWithFilenameExtension:[NSString stringWithUTF8String:ext.utf8().get_data()]];
++			if (type) {
++				[types addObject:type];
++			}
++		}
++	}
++	if (any || types.count == 0) {
++		[types addObject:UTTypeItem];
++	}
++	if (p_mode == DisplayServerEnums::FILE_DIALOG_MODE_OPEN_ANY) {
++		[types addObject:UTTypeFolder];
++	}
++	return types;
++}
++
++Error ios_document_picker_show(const String &p_title, const String &p_current_directory, DisplayServerEnums::FileDialogMode p_mode, const Vector<String> &p_filters, const Callable &p_callback, bool p_options_in_callback) {
++	if (@available(iOS 14.0, *)) {
++		ERR_FAIL_COND_V_MSG(p_mode == DisplayServerEnums::FILE_DIALOG_MODE_SAVE_FILE, ERR_UNAVAILABLE, "Saving through the system document picker is not supported.");
++		ERR_FAIL_COND_V_MSG(gdt_active_picker_delegate != nil, ERR_BUSY, "A document picker is already open.");
++
++		UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:_gdt_content_types(p_mode, p_filters) asCopy:NO];
++		picker.allowsMultipleSelection = p_mode == DisplayServerEnums::FILE_DIALOG_MODE_OPEN_FILES;
++		picker.shouldShowFileExtensions = YES;
++		if (!p_current_directory.is_empty()) {
++			picker.directoryURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:p_current_directory.utf8().get_data()] isDirectory:YES];
++		}
++		if (!p_title.is_empty()) {
++			picker.title = [NSString stringWithUTF8String:p_title.utf8().get_data()];
++		}
++
++		GDTDocumentPickerDelegate *delegate = [[GDTDocumentPickerDelegate alloc] init];
++		delegate->callback = p_callback;
++		delegate->options_in_callback = p_options_in_callback;
++		gdt_active_picker_delegate = delegate; // UIDocumentPickerViewController only keeps a weak reference.
++		picker.delegate = delegate;
++
++		[GDTAppDelegateService.viewController presentViewController:picker animated:YES completion:nil];
++		return OK;
++	}
++	return ERR_UNAVAILABLE;
++}
+diff --git a/platform/ios/ipados_editor_support.h b/platform/ios/ipados_editor_support.h
+new file mode 100644
+index 0000000..29ccf70
+--- /dev/null
++++ b/platform/ios/ipados_editor_support.h
+@@ -0,0 +1,53 @@
++/**************************************************************************/
++/*  ipados_editor_support.h                                               */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#pragma once
++
++#ifdef TOOLS_ENABLED
++
++#include "core/string/ustring.h"
++#include "core/templates/list.h"
++
++// Native (UIKit) pieces of the iPadOS editor workflow. The editor itself is the regular Godot editor;
++// these only cover what has to be native on iPadOS.
++
++// Shows the floating "Stop" control while a game started from the editor is running in-process.
++void ipados_editor_set_game_controls_visible(bool p_visible);
++
++// Detaches the current rendering layer before Main is set up again in-process.
++void ipados_editor_release_rendering_surface();
++
++// Crash/termination recovery: records which instance is running, so that if iPadOS terminates the
++// app while a game runs (crash, or memory pressure), the next launch returns to the editor and
++// reports what happened instead of silently starting the project manager.
++void ipados_editor_write_session_marker(bool p_game_running);
++bool ipados_editor_consume_session_marker(List<String> &r_editor_args, String &r_message);
++
++#endif // TOOLS_ENABLED
+diff --git a/platform/ios/ipados_editor_support.mm b/platform/ios/ipados_editor_support.mm
+new file mode 100644
+index 0000000..f442c53
+--- /dev/null
++++ b/platform/ios/ipados_editor_support.mm
+@@ -0,0 +1,155 @@
++/**************************************************************************/
++/*  ipados_editor_support.mm                                              */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#ifdef TOOLS_ENABLED
++
++#import "ipados_editor_support.h"
++
++#import "os_ios.h"
++
++#import "drivers/apple_embedded/app_delegate_service.h"
++#import "drivers/apple_embedded/godot_view_apple_embedded.h"
++#import "drivers/apple_embedded/godot_view_controller.h"
++
++#import <UIKit/UIKit.h>
++
++@interface GDTGameControlsHandler : NSObject
++- (void)stopPressed:(id)sender;
++- (void)dragged:(UIPanGestureRecognizer *)recognizer;
++@end
++
++@implementation GDTGameControlsHandler
++- (void)stopPressed:(id)sender {
++	OS_IOS *os = OS_IOS::get_singleton();
++	if (os) {
++		os->stop_game_session();
++	}
++}
++
++- (void)dragged:(UIPanGestureRecognizer *)recognizer {
++	UIView *view = recognizer.view;
++	UIView *container = view.superview;
++	CGPoint translation = [recognizer translationInView:container];
++	CGPoint center = CGPointMake(view.center.x + translation.x, view.center.y + translation.y);
++	CGRect bounds = container.bounds;
++	center.x = MAX(view.bounds.size.width / 2, MIN(bounds.size.width - view.bounds.size.width / 2, center.x));
++	center.y = MAX(view.bounds.size.height / 2, MIN(bounds.size.height - view.bounds.size.height / 2, center.y));
++	view.center = center;
++	[recognizer setTranslation:CGPointZero inView:container];
++}
++@end
++
++static UIButton *gdt_stop_button = nil;
++static GDTGameControlsHandler *gdt_controls_handler = nil;
++
++void ipados_editor_set_game_controls_visible(bool p_visible) {
++	UIView *root = GDTAppDelegateService.viewController.view;
++	if (!p_visible) {
++		[gdt_stop_button removeFromSuperview];
++		gdt_stop_button = nil;
++		return;
++	}
++	if (gdt_stop_button || !root) {
++		return;
++	}
++	if (!gdt_controls_handler) {
++		gdt_controls_handler = [[GDTGameControlsHandler alloc] init];
++	}
++
++	UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
++	[button setTitle:@" Stop" forState:UIControlStateNormal];
++	if (@available(iOS 13.0, *)) {
++		[button setImage:[UIImage systemImageNamed:@"stop.fill"] forState:UIControlStateNormal];
++	}
++	button.tintColor = UIColor.whiteColor;
++	button.backgroundColor = [UIColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:0.75];
++	button.layer.cornerRadius = 18;
++	button.titleLabel.font = [UIFont boldSystemFontOfSize:15];
++	button.accessibilityLabel = @"Stop running project and return to the editor";
++	const CGFloat w = 96, h = 36;
++	const UIEdgeInsets safe = root.safeAreaInsets;
++	button.frame = CGRectMake(root.bounds.size.width - w - 12 - safe.right, 12 + safe.top, w, h);
++	button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
++	[button addTarget:gdt_controls_handler action:@selector(stopPressed:) forControlEvents:UIControlEventTouchUpInside];
++	[button addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:gdt_controls_handler action:@selector(dragged:)]];
++	[root addSubview:button];
++	gdt_stop_button = button;
++}
++
++void ipados_editor_release_rendering_surface() {
++	[GDTAppDelegateService.viewController.godotView releaseRenderingLayer];
++}
++
++// Plain Foundation file access: the marker is read before Main (and FileAccess) is set up.
++static NSString *_marker_path() {
++	NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
++	return [[paths firstObject] stringByAppendingPathComponent:@"ipados_editor_session.txt"];
++}
++
++static NSString *_ns(const String &p_str) {
++	return [NSString stringWithUTF8String:p_str.utf8().get_data()];
++}
++
++void ipados_editor_write_session_marker(bool p_game_running) {
++	NSString *path = _marker_path();
++	if (!p_game_running) {
++		[[NSFileManager defaultManager] removeItemAtPath:path error:nil];
++		return;
++	}
++	OS *os = OS::get_singleton();
++	NSArray *lines = @[ @"game", _ns(os->get_in_process_session_value("game_log")), _ns(os->get_in_process_session_value("game_scene")), _ns(os->get_in_process_session_value("game_project")) ];
++	[[lines componentsJoinedByString:@"\n"] writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
++}
++
++bool ipados_editor_consume_session_marker(List<String> &r_editor_args, String &r_message) {
++	NSString *path = _marker_path();
++	NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
++	if (!content) {
++		return false;
++	}
++	[[NSFileManager defaultManager] removeItemAtPath:path error:nil];
++	NSArray<NSString *> *lines = [content componentsSeparatedByString:@"\n"];
++	if (lines.count < 4 || ![lines[0] isEqualToString:@"game"] || lines[3].length == 0) {
++		return false;
++	}
++	r_editor_args.clear();
++	r_editor_args.push_back("--path");
++	r_editor_args.push_back(String::utf8(lines[3].UTF8String));
++	r_editor_args.push_back("-e");
++	OS *os = OS::get_singleton();
++	os->set_in_process_session_value("game_log", String::utf8(lines[1].UTF8String));
++	os->set_in_process_session_value("game_scene", String::utf8(lines[2].UTF8String));
++	os->set_in_process_session_value("game_exit_code", "terminated");
++	r_message = "The running project ended unexpectedly: it crashed, iPadOS terminated it (for example because the device ran out of memory), or the app was closed while it was running. The game output up to that point is shown in the Output panel.";
++	os->set_in_process_session_value("game_termination_message", r_message);
++	return true;
++}
++
++#endif // TOOLS_ENABLED
+diff --git a/platform/ios/main_ios.mm b/platform/ios/main_ios.mm
+index 7d61b8a..56a0afc 100644
+--- a/platform/ios/main_ios.mm
++++ b/platform/ios/main_ios.mm
+@@ -30,6 +30,11 @@
+ 
+ #import "os_ios.h"
+ 
++#import "ios_document_picker.h"
++#ifdef TOOLS_ENABLED
++#import "ipados_editor_support.h"
++#endif
++
+ #include "core/profiling/profiling.h"
+ #import "drivers/apple_embedded/godot_app_delegate.h"
+ #import "drivers/apple_embedded/main_utilities.h"
+@@ -59,6 +64,42 @@ int apple_embedded_main(int argc, char **argv) {
+ 
+ 	godot_init_profiler();
+ 
++	// Regain access to folders/files picked earlier outside of the sandbox (projects on iCloud
++	// Drive, external drives, ...).
++	ios_document_picker_restore_bookmarks();
++
++#ifdef TOOLS_ENABLED
++	// The editor runs the project manager, the editor and the game one after another in this
++	// process, since iOS apps cannot spawn processes (see OS::create_instance()).
++	os->set_in_process_instances_enabled(true);
++
++	List<String> recovery_args;
++	String recovery_message;
++	if (argc <= 1 && ipados_editor_consume_session_marker(recovery_args, recovery_message)) {
++		// iPadOS terminated the app while a game was running: return to its project's editor.
++		static Vector<CharString> recovery_utf8;
++		static char *recovery_argv[16];
++		int n = 1;
++		recovery_argv[0] = fargv[0];
++		for (const String &arg : recovery_args) {
++			recovery_utf8.push_back(arg.utf8());
++		}
++		for (CharString &arg : recovery_utf8) {
++			if (n < 15) {
++				recovery_argv[n++] = arg.ptrw();
++			}
++		}
++		recovery_argv[n] = nullptr;
++		Error err = Main::setup(recovery_argv[0], n - 1, &recovery_argv[1], false);
++		if (err == OK) {
++			os->initialize_modules();
++			return os->get_exit_code();
++		}
++		// Fall back to a regular launch below.
++		os->increment_in_process_generation();
++	}
++#endif
++
+ 	Error err = Main::setup(fargv[0], argc - 1, &fargv[1], false);
+ 
+ 	if (err != OK) {
+diff --git a/platform/ios/os_ios.h b/platform/ios/os_ios.h
+index 89eeab1..dd05dab 100644
+--- a/platform/ios/os_ios.h
++++ b/platform/ios/os_ios.h
+@@ -42,6 +42,18 @@ public:
+ 	~OS_IOS();
+ 
+ 	virtual String get_name() const override;
++
++#ifdef TOOLS_ENABLED
++	// iPadOS editor: instances (project manager, editor, game) run one after another in this
++	// process, as iOS apps cannot spawn processes. See OS::create_instance().
++	virtual bool handle_main_loop_quit() override;
++	virtual bool handle_hardware_key_shortcut(Key p_key, NSInteger p_modifiers) override;
++	virtual Error shell_show_in_file_manager(String p_path, bool p_open_folder = true) override;
++	virtual bool is_process_running(const ProcessID &p_pid) const override;
++
++	bool is_game_session_running() const;
++	void stop_game_session();
++#endif
+ };
+ 
+ #endif // IOS_ENABLED
+diff --git a/platform/ios/os_ios.mm b/platform/ios/os_ios.mm
+index 6aa35c5..7b0f498 100644
+--- a/platform/ios/os_ios.mm
++++ b/platform/ios/os_ios.mm
+@@ -32,6 +32,14 @@
+ 
+ #import "display_server_ios.h"
+ 
++#ifdef TOOLS_ENABLED
++#import "ipados_editor_support.h"
++
++#include "core/io/dir_access.h"
++#include "main/main.h"
++#include "scene/main/scene_tree.h"
++#endif
++
+ #ifdef IOS_ENABLED
+ 
+ OS_IOS *OS_IOS::get_singleton() {
+@@ -49,4 +57,111 @@ String OS_IOS::get_name() const {
+ 	return "iOS";
+ }
+ 
++#ifdef TOOLS_ENABLED
++extern char **gargv;
++
++bool OS_IOS::is_game_session_running() const {
++	return get_in_process_session_value("game_running") == "1";
++}
++
++void OS_IOS::stop_game_session() {
++	if (!is_game_session_running()) {
++		return;
++	}
++	SceneTree *tree = Object::cast_to<SceneTree>(get_main_loop());
++	if (tree) {
++		tree->quit();
++	}
++}
++
++bool OS_IOS::is_process_running(const ProcessID &p_pid) const {
++	// In-process instances are reported with PID 0 and are never running concurrently.
++	if (p_pid == 0 && is_in_process_instances_enabled()) {
++		return false;
++	}
++	return OS_AppleEmbedded::is_process_running(p_pid);
++}
++
++bool OS_IOS::handle_hardware_key_shortcut(Key p_key, NSInteger p_modifiers) {
++	if (!is_game_session_running()) {
++		return false;
++	}
++	// Same shortcut as the editor's "Stop Running Project" (F8), plus Command+. which is the
++	// conventional "stop" shortcut on Apple platforms.
++	const bool command = p_modifiers & UIKeyModifierCommand;
++	if (p_key == Key::F8 || (command && p_key == Key::PERIOD)) {
++		stop_game_session();
++		return true;
++	}
++	return false;
++}
++
++Error OS_IOS::shell_show_in_file_manager(String p_path, bool p_open_folder) {
++	// The Files app can show folders of this app's Documents directory (and folders opened through
++	// the document picker) with the "shareddocuments" URL scheme.
++	if (p_open_folder && !DirAccess::dir_exists_absolute(p_path)) {
++		p_path = p_path.get_base_dir();
++	}
++	return shell_open("shareddocuments://" + p_path.uri_encode().replace("%2F", "/"));
++}
++
++bool OS_IOS::handle_main_loop_quit() {
++	if (!is_in_process_instances_enabled()) {
++		return false;
++	}
++
++	const bool was_game = is_game_session_running();
++	if (!has_pending_in_process_instance()) {
++		// iOS apps don't quit by themselves: go back to the project manager instead.
++		List<String> pm_args;
++		pm_args.push_back("--project-manager");
++		queue_in_process_instance(pm_args);
++	}
++
++	ipados_editor_set_game_controls_visible(false);
++
++	print_verbose("iPadOS: tearing down the current instance to start the next one in-process.");
++	Main::cleanup(true);
++	ipados_editor_release_rendering_surface();
++
++	// Try the queued instances until one of them starts (e.g. a game without a main scene fails).
++	for (int attempt = 0; attempt < 4; attempt++) {
++		if (!has_pending_in_process_instance()) {
++			List<String> pm_args;
++			pm_args.push_back("--project-manager");
++			queue_in_process_instance(pm_args);
++		}
++		List<String> args = pop_pending_in_process_instance();
++		Vector<CharString> args_utf8;
++		Vector<char *> argv;
++		for (const String &arg : args) {
++			args_utf8.push_back(arg.utf8());
++		}
++		for (CharString &arg : args_utf8) {
++			argv.push_back(arg.ptrw());
++		}
++
++		increment_in_process_generation();
++		set_exit_code(EXIT_SUCCESS);
++		const Error err = Main::setup(gargv[0], argv.size(), argv.ptrw(), false);
++		if (err == OK) {
++			initialize_modules();
++			const bool is_game = is_game_session_running();
++			ipados_editor_set_game_controls_visible(is_game);
++			ipados_editor_write_session_marker(is_game);
++			return true;
++		}
++		if (was_game || is_game_session_running()) {
++			// The game could not be set up: let the editor show the error.
++			set_in_process_session_value("game_running", "0");
++			set_in_process_session_value("game_exit_code", itos(EXIT_FAILURE));
++			set_in_process_session_value("game_end_ticks", itos(get_ticks_msec()));
++		}
++	}
++
++	alert("Godot could not start the next editor instance. Please restart the app.", "Godot Editor");
++	return true;
++}
++#endif // TOOLS_ENABLED
++
+ #endif // IOS_ENABLED
