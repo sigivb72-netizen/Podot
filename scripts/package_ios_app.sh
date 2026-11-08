@@ -54,7 +54,7 @@ FW_ARGS=()
 for fw in "${FRAMEWORKS[@]}"; do FW_ARGS+=(-framework "$fw"); done
 xcrun --sdk "$SDK" swiftc -parse-as-library -target "$TARGET" -sdk "$SDK_PATH" -Osize \
 	"$OUT/obj/link_stub.swift" "$OUT/obj/plugins_stub.o" "$LIB" -o "$APP/$EXECUTABLE" \
-	"${FW_ARGS[@]}" "${EXTRA_LINK[@]}" \
+	"${FW_ARGS[@]}" ${EXTRA_LINK[@]+"${EXTRA_LINK[@]}"} \
 	-lc++ -lz \
 	-Xlinker -ObjC -Xlinker -dead_strip \
 	-Xlinker -rpath -Xlinker @executable_path/Frameworks

@@ -87,7 +87,9 @@ func _finish() -> void:
 	check("input_touch_events", touch_events >= 2, touch_events)
 	check("input_key_events", key_events >= 1, key_events)
 	check("input_touch_emulates_mouse", mouse_events >= 1 or not ProjectSettings.get_setting("input_devices/pointing/emulate_mouse_from_touch"), mouse_events)
-	if audio_player:
+	if audio_player and AudioServer.get_driver_name() == "Dummy":
+		check("audio_stream_playing", true, "skipped: no audio device (Dummy driver)")
+	elif audio_player:
 		check("audio_stream_playing", audio_player.playing or audio_player.get_playback_position() > 0.0, audio_player.get_playback_position())
 	var img := get_viewport().get_texture().get_image() if DisplayServer.get_name() != "headless" else null
 	if img:
