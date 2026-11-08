@@ -15,7 +15,7 @@ var mouse_events := 0
 var audio_player: AudioStreamPlayer
 
 
-func check(name: String, ok: bool, detail := "") -> void:
+func check(name: String, ok: bool, detail: Variant = "") -> void:
 	checks[name] = { "ok": ok, "detail": str(detail) }
 	print("[game] %s: %s %s" % [name, "PASS" if ok else "FAIL", detail])
 

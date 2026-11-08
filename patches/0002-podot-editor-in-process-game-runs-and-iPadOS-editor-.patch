@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 10:27:54 +0000
+Date: Sun, 8 Nov 2026 10:53:26 +0000
 Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  adaptations
 
@@ -23,24 +23,26 @@ Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  core/os/keyboard.cpp                          |   2 +-
  .../asset_library_editor_plugin.cpp           |   2 +-
  editor/docks/filesystem_dock.cpp              |   6 +-
- editor/editor_node.cpp                        | 163 ++++++++++++++++--
+ editor/editor_node.cpp                        | 165 ++++++++++++++++--
  editor/editor_node.h                          |  11 +-
  editor/gui/editor_file_dialog.cpp             |  10 +-
  editor/inspector/editor_resource_preview.cpp  |   7 +
  editor/inspector/editor_resource_preview.h    |   4 +
- .../project_manager/project_device_limits.cpp | 144 ++++++++++++++++
+ .../project_manager/project_device_limits.cpp | 144 +++++++++++++++
  .../project_manager/project_device_limits.h   |  60 +++++++
  editor/project_manager/project_manager.cpp    |  32 +++-
  editor/project_manager/project_manager.h      |   3 +
  editor/run/editor_run.cpp                     |  18 ++
  editor/run/game_view_plugin.cpp               |  12 +-
  editor/run/game_view_plugin.h                 |   8 +-
+ editor/scene/editor_scene_tabs.cpp            |   1 -
+ editor/scene/editor_scene_tabs.h              |   2 +
  editor/script/script_editor_plugin.cpp        |   6 +-
  editor/script/script_editor_plugin.h          |   2 +-
  editor/script/script_text_editor.cpp          |   2 +-
  editor/settings/editor_settings.cpp           |  31 +++-
  scene/gui/file_dialog.cpp                     |   5 +-
- 21 files changed, 496 insertions(+), 44 deletions(-)
+ 23 files changed, 500 insertions(+), 45 deletions(-)
  create mode 100644 editor/project_manager/project_device_limits.cpp
  create mode 100644 editor/project_manager/project_device_limits.h
 
@@ -139,7 +141,7 @@ index 232fc24..e406526 100644
  	ED_SHORTCUT("filesystem_dock/show_in_explorer", TTRC("Open in File Manager"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::R);
  	ED_SHORTCUT("filesystem_dock/open_in_external_program", TTRC("Open in External Program"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::E);
 diff --git a/editor/editor_node.cpp b/editor/editor_node.cpp
-index 5bc4649..4c77bc2 100644
+index 5bc4649..e422227 100644
 --- a/editor/editor_node.cpp
 +++ b/editor/editor_node.cpp
 @@ -201,7 +201,7 @@
@@ -196,7 +198,7 @@ index 5bc4649..4c77bc2 100644
  			fbx_importer_manager->show_dialog();
  #endif
  		} break;
-@@ -6784,6 +6801,128 @@ void EditorNode::_restart_editor(bool p_goto_project_manager) {
+@@ -6784,6 +6801,130 @@ void EditorNode::_restart_editor(bool p_goto_project_manager) {
  	OS::get_singleton()->set_restart_on_exit(true, args);
  }
  
@@ -254,8 +256,10 @@ index 5bc4649..4c77bc2 100644
 +
 +	print_line(vformat("Running the project in-process: the editor will close and reopen when the game quits (log: %s).", log_path));
 +
++	// Deferred: this can be called from an editor plugin (EditorInterface.play_main_scene()), which
++	// _exit_editor() unloads.
 +	exiting = true;
-+	_exit_editor(EXIT_SUCCESS);
++	callable_mp(this, &EditorNode::_exit_editor).call_deferred(EXIT_SUCCESS);
 +	return OK;
 +}
 +
@@ -325,7 +329,7 @@ index 5bc4649..4c77bc2 100644
  void EditorNode::_scene_tab_closed(int p_tab) {
  	current_menu_option = SCENE_TAB_CLOSE;
  	tab_closing_idx = p_tab;
-@@ -8075,7 +8214,7 @@ void EditorNode::_build_project_menu() {
+@@ -8075,7 +8216,7 @@ void EditorNode::_build_project_menu() {
  	project_menu->add_shortcut(ED_GET_SHORTCUT("editor/export"), PROJECT_EXPORT);
  	project_menu->add_item(TTRC("Pack Project as ZIP..."), PROJECT_PACK_AS_ZIP);
  	project_menu->add_item(TTRC("Install Android Build Template..."), PROJECT_INSTALL_ANDROID_SOURCE);
@@ -334,7 +338,7 @@ index 5bc4649..4c77bc2 100644
  	project_menu->add_item(TTRC("Open User Data Folder"), PROJECT_OPEN_USER_DATA_FOLDER);
  #endif
  	project_menu->add_separator();
-@@ -8126,7 +8265,7 @@ void EditorNode::_build_settings_menu() {
+@@ -8126,7 +8267,7 @@ void EditorNode::_build_settings_menu() {
  	settings_menu->add_shortcut(ED_GET_SHORTCUT("editor/fullscreen_mode"), EDITOR_TOGGLE_FULLSCREEN);
  	settings_menu->add_separator();
  
@@ -343,7 +347,7 @@ index 5bc4649..4c77bc2 100644
  	if (EditorPaths::get_singleton()->get_data_dir() == EditorPaths::get_singleton()->get_config_dir()) {
  		// Configuration and data folders are located in the same place.
  		settings_menu->add_item(TTRC("Open Editor Data/Settings Folder"), EDITOR_OPEN_DATA_FOLDER);
-@@ -8140,7 +8279,7 @@ void EditorNode::_build_settings_menu() {
+@@ -8140,7 +8281,7 @@ void EditorNode::_build_settings_menu() {
  
  	settings_menu->add_item(TTRC("Manage Editor Features..."), EDITOR_MANAGE_FEATURE_PROFILES);
  	settings_menu->add_item(TTRC("Manage Export Templates..."), EDITOR_MANAGE_EXPORT_TEMPLATES);
@@ -352,7 +356,7 @@ index 5bc4649..4c77bc2 100644
  	settings_menu->add_item(TTRC("Configure FBX Importer..."), EDITOR_CONFIGURE_FBX_IMPORTER);
  #endif
  }
-@@ -8250,7 +8389,7 @@ void EditorNode::_update_main_menu_type() {
+@@ -8250,7 +8391,7 @@ void EditorNode::_update_main_menu_type() {
  			}
  		}
  
@@ -361,7 +365,7 @@ index 5bc4649..4c77bc2 100644
  		// Align main menu icon visually with TouchActionsPanel buttons.
  		menu_btn_spacer = memnew(Control);
  		menu_btn_spacer->set_custom_minimum_size(Vector2(8, 0) * EDSCALE);
-@@ -8292,7 +8431,7 @@ void EditorNode::_bottom_panel_resized() {
+@@ -8292,7 +8433,7 @@ void EditorNode::_bottom_panel_resized() {
  	bottom_panel->set_bottom_panel_offset(center_split->get_split_offset());
  }
  
@@ -370,7 +374,7 @@ index 5bc4649..4c77bc2 100644
  void EditorNode::_touch_actions_panel_mode_changed() {
  	int panel_mode = EDITOR_GET("interface/touchscreen/touch_actions_panel");
  	switch (panel_mode) {
-@@ -8672,7 +8811,7 @@ EditorNode::EditorNode() {
+@@ -8672,7 +8813,7 @@ EditorNode::EditorNode() {
  
  	main_vbox = memnew(VBoxContainer);
  
@@ -379,7 +383,7 @@ index 5bc4649..4c77bc2 100644
  	base_vbox = memnew(VBoxContainer);
  	base_vbox->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT, Control::PRESET_MODE_MINSIZE, theme->get_constant(SNAME("window_border_margin"), EditorStringName(Editor)));
  
-@@ -8916,7 +9055,7 @@ EditorNode::EditorNode() {
+@@ -8916,7 +9057,7 @@ EditorNode::EditorNode() {
  	gui_base->add_child(about);
  	feature_profile_manager->connect("current_feature_profile_changed", callable_mp(this, &EditorNode::_feature_profile_changed));
  
@@ -388,7 +392,7 @@ index 5bc4649..4c77bc2 100644
  	fbx_importer_manager = memnew(FBXImporterManager);
  	gui_base->add_child(fbx_importer_manager);
  #endif
-@@ -9392,9 +9531,13 @@ EditorNode::EditorNode() {
+@@ -9392,9 +9533,13 @@ EditorNode::EditorNode() {
  	add_editor_plugin(memnew(Node3DEditorPlugin));
  	add_editor_plugin(memnew(ScriptEditorPlugin));
  
@@ -923,6 +927,31 @@ index ddcc21d..82c7802 100644
  	virtual void make_visible(bool p_visible) override;
  
  	virtual void set_window_layout(Ref<ConfigFile> p_layout) override;
+diff --git a/editor/scene/editor_scene_tabs.cpp b/editor/scene/editor_scene_tabs.cpp
+index 3878784..96d63f0 100644
+--- a/editor/scene/editor_scene_tabs.cpp
++++ b/editor/scene/editor_scene_tabs.cpp
+@@ -261,7 +261,6 @@ void EditorSceneTabs::_update_scene_list() {
+ }
+ 
+ void EditorSceneTabs::update_scene_tabs() {
+-	static bool menu_initialized = false;
+ 	tab_preview_panel->hide();
+ 
+ 	if (menu_initialized && scene_tabs->get_tab_count() == EditorNode::get_editor_data().get_edited_scene_count()) {
+diff --git a/editor/scene/editor_scene_tabs.h b/editor/scene/editor_scene_tabs.h
+index 78a3070..9d7a6e2 100644
+--- a/editor/scene/editor_scene_tabs.h
++++ b/editor/scene/editor_scene_tabs.h
+@@ -42,6 +42,8 @@ class TabBar;
+ class TextureRect;
+ 
+ class EditorSceneTabs : public MarginContainer {
++	bool menu_initialized = false; // Not static: the editor can be set up again in the same process.
++
+ 	GDCLASS(EditorSceneTabs, MarginContainer);
+ 
+ 	inline static EditorSceneTabs *singleton = nullptr;
 diff --git a/editor/script/script_editor_plugin.cpp b/editor/script/script_editor_plugin.cpp
 index 0e60dde..dacc55e 100644
 --- a/editor/script/script_editor_plugin.cpp

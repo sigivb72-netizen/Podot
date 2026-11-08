@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 10:27:54 +0000
+Date: Sun, 8 Nov 2026 10:53:25 +0000
 Subject: [PATCH 1/4] podot: core: in-process instances (sequential Main
  relaunch in one process)
 
@@ -15,16 +15,30 @@ the platform main loop fully cleans up Main and sets it up again with them.
 - CompositeLogger: allow dropping loggers added by Main.
 - linuxbsd: honor GODOT_IN_PROCESS_INSTANCES=1 to test the flow on desktop.
 ---
+ core/io/ip.cpp                       |   1 +
  core/io/logger.cpp                   |   9 ++
  core/io/logger.h                     |   3 +
+ core/object/class_db.cpp             |   3 +
+ core/object/object.cpp               |   8 +-
+ core/object/object.h                 |  35 +++---
  core/os/os.cpp                       |  55 +++++++++
  core/os/os.h                         |  39 ++++++-
  core/string/string_name.cpp          |  43 +++++++
  core/string/string_name.h            |   4 +
- main/main.cpp                        | 163 +++++++++++++++++++++++++++
+ main/main.cpp                        | 165 +++++++++++++++++++++++++++
  platform/linuxbsd/godot_linuxbsd.cpp |  61 ++++++++--
- 8 files changed, 364 insertions(+), 13 deletions(-)
+ 12 files changed, 394 insertions(+), 32 deletions(-)
 
+diff --git a/core/io/ip.cpp b/core/io/ip.cpp
+index ec7c72d..863a78c 100644
+--- a/core/io/ip.cpp
++++ b/core/io/ip.cpp
+@@ -351,4 +351,5 @@ IP::~IP() {
+ 	resolver->thread.wait_to_finish();
+ 
+ 	memdelete(resolver);
++	singleton = nullptr;
+ }
 diff --git a/core/io/logger.cpp b/core/io/logger.cpp
 index 2973bd0..82334d4 100644
 --- a/core/io/logger.cpp
@@ -59,6 +73,147 @@ index 6fa0cc2..d63b220 100644
  
  	virtual ~CompositeLogger();
  };
+diff --git a/core/object/class_db.cpp b/core/object/class_db.cpp
+index 855ced0..415a3a2 100644
+--- a/core/object/class_db.cpp
++++ b/core/object/class_db.cpp
+@@ -2371,6 +2371,9 @@ void ClassDB::cleanup() {
+ 		*type = nullptr;
+ 	}
+ 	gdtype_autorelease_pool.clear();
++
++	// All classes must register again if ClassDB is used again in this process.
++	Object::_class_registration_generation++;
+ }
+ 
+ // Array to use in optional parameters on methods and the DEFVAL_ARRAY macro.
+diff --git a/core/object/object.cpp b/core/object/object.cpp
+index c6f0cf2..62d4b05 100644
+--- a/core/object/object.cpp
++++ b/core/object/object.cpp
+@@ -1700,14 +1700,14 @@ Variant Object::_get_indexed_bind(const NodePath &p_name) const {
+ }
+ 
+ void Object::initialize_class() {
+-	static bool initialized = false;
+-	if (likely(initialized)) {
++	static uint32_t initialized_generation = 0;
++	if (likely(initialized_generation == _class_registration_generation)) {
+ 		return;
+ 	}
+ 
+ 	static BinaryMutex __init_mutex;
+ 	MutexLock lock(__init_mutex);
+-	if (initialized) {
++	if (initialized_generation == _class_registration_generation) {
+ 		// Initialized on another thread while we were waiting.
+ 		return;
+ 	}
+@@ -1715,7 +1715,7 @@ void Object::initialize_class() {
+ 	get_gdtype_static_mutable().initialize();
+ 	_bind_methods();
+ 	_bind_compatibility_methods();
+-	initialized = true;
++	initialized_generation = _class_registration_generation;
+ }
+ 
+ StringName Object::get_translation_domain() const {
+diff --git a/core/object/object.h b/core/object/object.h
+index 451680a..c34e53f 100644
+--- a/core/object/object.h
++++ b/core/object/object.h
+@@ -252,20 +252,21 @@ private: \
+ 	friend class ::ClassDB; \
+ \
+ 	static GDType &get_gdtype_static_mutable() { \
++		/* The pointer is reset by ClassDB::cleanup(), so that the type is created again if */ \
++		/* the engine is set up again in the same process. */ \
+ 		static GDType *gdtype = nullptr; \
+-		static bool initialized = false; \
+-		if (likely(initialized)) { \
++		if (likely(gdtype)) { \
+ 			return *gdtype; \
+ 		} \
+ \
+ 		static BinaryMutex __init_mutex; \
+ 		MutexLock lock(__init_mutex); \
+-		if (initialized) { \
++		if (gdtype) { \
+ 			return *gdtype; \
+ 		} \
+-		gdtype = memnew(GDType(&super_type::get_gdtype_static(), StringName(#m_class))); \
++		GDType *new_gdtype = memnew(GDType(&super_type::get_gdtype_static(), StringName(#m_class))); \
++		gdtype = new_gdtype; \
+ 		m_class::autorelease_gdtype(&gdtype); \
+-		initialized = true; \
+ 		return *gdtype; \
+ 	} \
+ \
+@@ -290,14 +291,15 @@ protected: \
+ \
+ public: \
+ 	static void initialize_class() { \
+-		static bool initialized = false; \
+-		if (likely(initialized)) { \
++		/* Registered once per ClassDB generation (see Object::_class_registration_generation). */ \
++		static uint32_t initialized_generation = 0; \
++		if (likely(initialized_generation == Object::_class_registration_generation)) { \
+ 			return; \
+ 		} \
+ \
+ 		static BinaryMutex __init_mutex; \
+ 		MutexLock lock(__init_mutex); \
+-		if (initialized) { \
++		if (initialized_generation == Object::_class_registration_generation) { \
+ 			return; \
+ 		} \
+ 		m_inherits::initialize_class(); \
+@@ -309,7 +311,7 @@ public: \
+ 		if (m_class::_get_bind_compatibility_methods() != m_inherits::_get_bind_compatibility_methods()) { \
+ 			_bind_compatibility_methods(); \
+ 		} \
+-		initialized = true; \
++		initialized_generation = Object::_class_registration_generation; \
+ 	} \
+ \
+ protected: \
+@@ -350,6 +352,10 @@ class Object {
+ public:
+ 	typedef Object self_type;
+ 
++	// Incremented by ClassDB::cleanup(): classes register again (initialize_class()) when the
++	// engine is set up again in the same process (in-process instances, see OS::create_instance()).
++	static inline uint32_t _class_registration_generation = 1;
++
+ 	enum ConnectFlags {
+ 		CONNECT_DEFERRED = 1,
+ 		CONNECT_PERSIST = 2, // Hint for scene to save this connection.
+@@ -453,20 +459,19 @@ private:
+ 	void _reset_gdtype() const;
+ 
+ 	static GDType &get_gdtype_static_mutable() {
+-		static GDType *gdtype = nullptr;
+-		static bool initialized = false;
+-		if (likely(initialized)) {
++		static GDType *gdtype = nullptr; // Reset by ClassDB::cleanup().
++		if (likely(gdtype)) {
+ 			return *gdtype;
+ 		}
+ 
+ 		static BinaryMutex __init_mutex;
+ 		MutexLock lock(__init_mutex);
+-		if (initialized) {
++		if (gdtype) {
+ 			return *gdtype;
+ 		}
+-		gdtype = memnew(GDType(nullptr, StringName("Object")));
++		GDType *new_gdtype = memnew(GDType(nullptr, StringName("Object")));
++		gdtype = new_gdtype;
+ 		autorelease_gdtype(&gdtype);
+-		initialized = true;
+ 		return *gdtype;
+ 	}
+ 
 diff --git a/core/os/os.cpp b/core/os/os.cpp
 index ffc0dff..f8169b4 100644
 --- a/core/os/os.cpp
@@ -266,7 +421,7 @@ index 0619af8..e0a6f10 100644
  	struct DebugSortReferences {
  		bool operator()(const _Data *p_left, const _Data *p_right) const {
 diff --git a/main/main.cpp b/main/main.cpp
-index 2fc62fd..341a2f6 100644
+index 2fc62fd..b72791d 100644
 --- a/main/main.cpp
 +++ b/main/main.cpp
 @@ -297,6 +297,124 @@ bool profile_gpu = false;
@@ -428,7 +583,15 @@ index 2fc62fd..341a2f6 100644
  
  	CoreGlobals::print_ready = true;
  
-@@ -3006,6 +3143,10 @@ error:
+@@ -2986,6 +3123,7 @@ error:
+ 		memdelete(engine);
+ 	}
+ 
++	StringName::preserve_static_on_cleanup = OS::get_singleton()->is_in_process_instances_enabled() && OS::get_singleton()->has_pending_in_process_instance();
+ 	unregister_core_types();
+ 
+ 	OS::get_singleton()->_cmdline.clear();
+@@ -3006,6 +3144,10 @@ error:
  	OS::get_singleton()->finalize_core();
  	locale = String();
  
@@ -439,7 +602,7 @@ index 2fc62fd..341a2f6 100644
  	Thread::release_main_thread();
  
  	return exit_err;
-@@ -4915,6 +5056,13 @@ static uint64_t physics_process_max = 0;
+@@ -4915,6 +5057,13 @@ static uint64_t physics_process_max = 0;
  static uint64_t process_max = 0;
  static uint64_t navigation_process_max = 0;
  
@@ -453,7 +616,7 @@ index 2fc62fd..341a2f6 100644
  // Return false means iterating further, returning true means `OS::run`
  // will terminate the program. In case of failure, the OS exit code needs
  // to be set explicitly here (defaults to EXIT_SUCCESS).
-@@ -5258,6 +5406,14 @@ void Main::cleanup(bool p_force) {
+@@ -5258,6 +5407,14 @@ void Main::cleanup(bool p_force) {
  
  	OS::get_singleton()->delete_main_loop();
  
@@ -468,17 +631,18 @@ index 2fc62fd..341a2f6 100644
  	OS::get_singleton()->_cmdline.clear();
  	OS::get_singleton()->_user_args.clear();
  	OS::get_singleton()->_execpath = "";
-@@ -5395,6 +5551,9 @@ void Main::cleanup(bool p_force) {
+@@ -5395,6 +5552,10 @@ void Main::cleanup(bool p_force) {
  		memdelete(engine);
  	}
  
-+	// Keep static StringNames alive if Main is going to be set up again in this process.
-+	StringName::preserve_static_on_cleanup = OS::get_singleton()->is_in_process_instances_enabled();
++	// Keep static StringNames alive if Main is going to be set up again in this process (platforms
++	// that never exit, like iOS, always queue a next instance before cleaning up).
++	StringName::preserve_static_on_cleanup = OS::get_singleton()->is_in_process_instances_enabled() && OS::get_singleton()->has_pending_in_process_instance();
 +
  	unregister_core_types();
  
  	OS::get_singleton()->benchmark_end_measure("Shutdown", "Main::Cleanup");
-@@ -5402,5 +5561,9 @@ void Main::cleanup(bool p_force) {
+@@ -5402,5 +5563,9 @@ void Main::cleanup(bool p_force) {
  
  	OS::get_singleton()->finalize_core();
  

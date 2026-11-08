@@ -24,10 +24,10 @@ fi
 # --- End-to-end scenario in-process (headless) ---
 WORK="$(mktemp -d)"
 cp -R "$ROOT/tests/projects/e2e" "$WORK/e2e"
+# Initial import of the test project (as when a project is opened for the first time).
+timeout 600 "$GODOT_BIN" --headless --editor --path "$WORK/e2e" --import > "$RESULTS/e2e_import.log" 2>&1
 mkdir -p "$WORK/e2e/.test_results" && touch "$WORK/e2e/.test_results/PODOT_E2E"
 export GODOT_IN_PROCESS_INSTANCES=1
-# The editor needs an initial import before plugins run reliably in headless mode.
-timeout 600 "$GODOT_BIN" --headless --editor --path "$WORK/e2e" --import > "$RESULTS/e2e_import.log" 2>&1
 timeout 900 "$GODOT_BIN" --headless --editor --path "$WORK/e2e" > "$RESULTS/e2e.log" 2>&1
 CODE=$?
 unset GODOT_IN_PROCESS_INSTANCES

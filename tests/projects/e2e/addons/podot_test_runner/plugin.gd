@@ -52,7 +52,7 @@ func _enter_tree() -> void:
 		await _stage_editor()
 
 
-func check(name: String, ok: bool, detail := "") -> void:
+func check(name: String, ok: bool, detail: Variant = "") -> void:
 	checks[name] = { "ok": ok, "detail": str(detail) }
 	print("[e2e] %s: %s %s" % [name, "PASS" if ok else "FAIL", detail])
 
@@ -206,9 +206,10 @@ func _test_scene_editing() -> void:
 	ur.add_undo_method(scene, "remove_child", holder)
 	ur.commit_action()
 	check("node_create", scene.has_node("Sprite") and scene.has_node("Holder"))
-	ur.undo()
+	var history := ur.get_history_undo_redo(ur.get_object_history_id(scene))
+	history.undo()
 	check("node_create_undo", not scene.has_node("Sprite"))
-	ur.redo()
+	history.redo()
 	check("node_create_redo", scene.has_node("Sprite"))
 
 	# Duplicate.
