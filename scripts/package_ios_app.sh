@@ -11,6 +11,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GODOT="${GODOT_DIR:-$ROOT/godot}"
 VARIANT="${1:-device}"
 OUT="${2:-$ROOT/build/$VARIANT}"
+mkdir -p "$OUT" && OUT="$(cd "$OUT" && pwd)"
 
 EXECUTABLE=Podot
 BUNDLE_ID="${IOS_BUNDLE_ID:-io.github.sigivb72-netizen.podot}"
@@ -46,11 +47,14 @@ xcrun --sdk "$SDK" clang++ -target "$TARGET" -isysroot "$SDK_PATH" -Os -c "$ROOT
 FRAMEWORKS=(Foundation UIKit SwiftUI QuartzCore Metal OpenGLES AVFoundation AVFAudio AudioToolbox
 	CoreAudio CoreMIDI CoreMotion CoreHaptics CoreText CoreGraphics CoreVideo CoreMedia
 	GameController UniformTypeIdentifiers Security)
+EXTRA_LINK=()
+# MetalFX (upscaling) is only used by the Metal renderer, which upstream disables for the Simulator.
+[ "$VARIANT" = "device" ] && EXTRA_LINK+=(-Xlinker -weak_framework -Xlinker MetalFX)
 FW_ARGS=()
 for fw in "${FRAMEWORKS[@]}"; do FW_ARGS+=(-framework "$fw"); done
 xcrun --sdk "$SDK" swiftc -parse-as-library -target "$TARGET" -sdk "$SDK_PATH" -Osize \
 	"$OUT/obj/link_stub.swift" "$OUT/obj/plugins_stub.o" "$LIB" -o "$APP/$EXECUTABLE" \
-	"${FW_ARGS[@]}" -Xlinker -weak_framework -Xlinker MetalFX \
+	"${FW_ARGS[@]}" "${EXTRA_LINK[@]}" \
 	-lc++ -lz \
 	-Xlinker -ObjC -Xlinker -dead_strip \
 	-Xlinker -rpath -Xlinker @executable_path/Frameworks
