@@ -88,9 +88,8 @@ func _wait_for_import() -> void:
 	var fs := EditorInterface.get_resource_filesystem()
 	fs.scan()
 	await _wait_frames(2)
-	var guard := 0
-	while (fs.is_scanning() or fs.is_importing()) and guard < 3000:
-		guard += 1
+	var deadline := Time.get_ticks_msec() + 600000 # Slow software rendering in CI simulators.
+	while (fs.is_scanning() or fs.is_importing()) and Time.get_ticks_msec() < deadline:
 		await get_tree().process_frame
 	await _wait_frames(5)
 
@@ -528,6 +527,10 @@ func _mode_input() -> void:
 	while true:
 		await get_tree().create_timer(0.5).timeout
 		if code_edit:
+			# Keep the caret in the script (as a user would after tapping into it).
+			if not code_edit.has_focus():
+				code_edit.grab_focus()
+			input_counts["focused"] = code_edit.has_focus()
 			input_counts["text"] = code_edit.text
 		_write_mode_results("input.json", input_counts)
 

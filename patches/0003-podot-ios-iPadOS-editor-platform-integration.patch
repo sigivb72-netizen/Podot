@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 12:25:23 +0000
+Date: Sun, 8 Nov 2026 14:30:37 +0000
 Subject: [PATCH 3/4] podot: ios: iPadOS editor platform integration
 
 - Enable editor builds' in-process instances; relaunch Main in-process
@@ -25,8 +25,8 @@ Subject: [PATCH 3/4] podot: ios: iPadOS editor platform integration
  .../apple_embedded/godot_view_controller.mm   | 124 ++++++---
  drivers/apple_embedded/godot_view_renderer.h  |   2 +
  drivers/apple_embedded/godot_view_renderer.mm |  13 +-
- drivers/apple_embedded/os_apple_embedded.h    |  10 +
- drivers/apple_embedded/os_apple_embedded.mm   |   2 +
+ drivers/apple_embedded/os_apple_embedded.h    |  17 ++
+ drivers/apple_embedded/os_apple_embedded.mm   |  36 +++
  platform/ios/SCsub                            |   2 +
  platform/ios/display_server_ios.h             |   3 +
  platform/ios/display_server_ios.mm            |  22 ++
@@ -37,7 +37,7 @@ Subject: [PATCH 3/4] podot: ios: iPadOS editor platform integration
  platform/ios/main_ios.mm                      |  46 ++++
  platform/ios/os_ios.h                         |  12 +
  platform/ios/os_ios.mm                        | 127 +++++++++
- 20 files changed, 1267 insertions(+), 37 deletions(-)
+ 20 files changed, 1308 insertions(+), 37 deletions(-)
  create mode 100644 drivers/apple_embedded/display_server_apple_embedded_pointer.mm
  create mode 100644 platform/ios/ios_document_picker.h
  create mode 100644 platform/ios/ios_document_picker.mm
@@ -868,7 +868,7 @@ index 60c6701..5642f22 100644
  
  @end
 diff --git a/drivers/apple_embedded/os_apple_embedded.h b/drivers/apple_embedded/os_apple_embedded.h
-index d801a86..66fb07f 100644
+index d801a86..1804536 100644
 --- a/drivers/apple_embedded/os_apple_embedded.h
 +++ b/drivers/apple_embedded/os_apple_embedded.h
 @@ -34,6 +34,7 @@
@@ -895,8 +895,22 @@ index d801a86..66fb07f 100644
  	void start();
  
  	virtual void alert(const String &p_alert, const String &p_title = "ALERT!") override;
+@@ -118,6 +128,13 @@ public:
+ 	virtual String get_user_data_dir(const String &p_user_dir) const override;
+ 
+ 	virtual String get_cache_path() const override;
++	virtual String get_system_dir(SystemDir p_dir, bool p_shared_storage = true) const override;
++#ifdef TOOLS_ENABLED
++	// The editor stores its settings and data in Application Support (the app bundle is read-only),
++	// and running projects get desktop-like per-project user:// folders there.
++	virtual String get_data_path() const override;
++	virtual String get_config_path() const override;
++#endif
+ 	virtual String get_temp_path() const override;
+ 	virtual String get_resource_dir() const override;
+ 	virtual String get_bundle_resource_dir() const override;
 diff --git a/drivers/apple_embedded/os_apple_embedded.mm b/drivers/apple_embedded/os_apple_embedded.mm
-index 84e4821..eaa4d66 100644
+index 84e4821..e4f7b57 100644
 --- a/drivers/apple_embedded/os_apple_embedded.mm
 +++ b/drivers/apple_embedded/os_apple_embedded.mm
 @@ -193,11 +193,13 @@ void OS_AppleEmbedded::deinitialize_modules() {
@@ -913,6 +927,55 @@ index 84e4821..eaa4d66 100644
  	}
  }
  
+@@ -393,7 +395,30 @@ Error OS_AppleEmbedded::shell_open(const String &p_uri) {
+ 	return OK;
+ }
+ 
++#ifdef TOOLS_ENABLED
++String OS_AppleEmbedded::get_data_path() const {
++	static String ret;
++	if (ret.is_empty()) {
++		NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
++		if (paths && [paths count] >= 1) {
++			ret.append_utf8([[paths firstObject] UTF8String]);
++			[[NSFileManager defaultManager] createDirectoryAtPath:[paths firstObject] withIntermediateDirectories:YES attributes:nil error:nil];
++		}
++	}
++	return ret;
++}
++
++String OS_AppleEmbedded::get_config_path() const {
++	return get_data_path();
++}
++#endif
++
+ String OS_AppleEmbedded::get_user_data_dir(const String &p_user_dir) const {
++#ifdef TOOLS_ENABLED
++	// Projects run from the editor use a per-project folder, as on desktop, instead of the app's
++	// Documents folder (which holds the projects themselves).
++	return OS_Unix::get_user_data_dir(p_user_dir);
++#endif
+ 	static String ret;
+ 	if (ret.is_empty()) {
+ 		NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+@@ -415,6 +440,17 @@ String OS_AppleEmbedded::get_cache_path() const {
+ 	return ret;
+ }
+ 
++String OS_AppleEmbedded::get_system_dir(SystemDir p_dir, bool p_shared_storage) const {
++	// Only the app's Documents folder is visible to the user (Files app, Finder, iTunes sharing).
++	if (p_dir == SYSTEM_DIR_DOCUMENTS || p_dir == SYSTEM_DIR_DESKTOP || p_dir == SYSTEM_DIR_DOWNLOADS) {
++		NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
++		if (paths && [paths count] >= 1) {
++			return String::utf8([[paths firstObject] UTF8String]);
++		}
++	}
++	return String();
++}
++
+ String OS_AppleEmbedded::get_temp_path() const {
+ 	static String ret;
+ 	if (ret.is_empty()) {
 diff --git a/platform/ios/SCsub b/platform/ios/SCsub
 index 92f6c17..37e02bc 100644
 --- a/platform/ios/SCsub

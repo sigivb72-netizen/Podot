@@ -90,9 +90,9 @@ app_running && result PASS quit_returns_to_project_manager "app still alive afte
 # --- 3. End-to-end editor scenario, including running the game in-process ---------------------------
 rm -rf "$DOCS/e2e" && cp -R "$ROOT/tests/projects/e2e" "$DOCS/e2e"
 mkdir -p "$DOCS/e2e/.test_results" && touch "$DOCS/e2e/.test_results/PODOT_E2E"
-launch e2e --editor --path "$DOCS/e2e"
+launch e2e --verbose --editor --path "$DOCS/e2e"
 for i in 1 2 3 4 5 6; do sleep 30; shot "03_e2e_$i"; done
-if wait_for_file "$DOCS/e2e/.test_results/editor.json" 900 'd["done"]'; then
+if wait_for_file "$DOCS/e2e/.test_results/editor.json" 2400 'd["done"]'; then
 	python3 - "$DOCS/e2e/.test_results/editor.json" <<'PY' | tee -a "$SUMMARY"
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -169,15 +169,22 @@ copy_log input
 # --- 6. Existing project from the official demo collection -------------------------------------------
 if git clone --depth 1 https://github.com/godotengine/godot-demo-projects.git "$RESULTS/../demos" >/dev/null 2>&1; then
 	rm -rf "$DOCS/platformer" && cp -R "$RESULTS/../demos/2d/platformer" "$DOCS/platformer"
-	launch existing_project --editor --path "$DOCS/platformer" --quit-after 3600
-	sleep 75
+	# The CI Simulator renders with Apple's software OpenGL renderer, which is very slow: poll.
+	launch existing_project --verbose --editor --path "$DOCS/platformer"
+	EXPECTED="$(find "$DOCS/platformer" -name "*.import" | wc -l | tr -d ' ')"
+	IMPORTED=0
+	for i in $(seq 1 90); do
+		sleep 10
+		IMPORTED="$(find "$DOCS/platformer/.godot/imported" -name "*.md5" 2>/dev/null | wc -l | tr -d ' ')"
+		[ "$i" = 6 ] && shot 06_existing_project_1min
+		[ "${IMPORTED:-0}" -ge "$EXPECTED" ] && break
+	done
 	shot 06_existing_project
-	sleep 15
-	IMPORTED="$(find "$DOCS/platformer/.godot/imported" -type f 2>/dev/null | wc -l | tr -d ' ')"
-	if [ "${IMPORTED:-0}" -gt 10 ]; then
-		result PASS existing_project_import "$IMPORTED imported files"
+	echo "imported $IMPORTED of $EXPECTED assets"
+	if [ "${IMPORTED:-0}" -ge "$EXPECTED" ] && [ "$EXPECTED" -gt 0 ]; then
+		result PASS existing_project_import "$IMPORTED of $EXPECTED assets imported"
 	else
-		result FAIL existing_project_import "${IMPORTED:-0} imported files"
+		result FAIL existing_project_import "$IMPORTED of $EXPECTED assets imported"
 	fi
 	copy_log existing_project
 else

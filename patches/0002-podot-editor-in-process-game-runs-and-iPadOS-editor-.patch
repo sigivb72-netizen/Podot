@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 12:25:23 +0000
+Date: Sun, 8 Nov 2026 14:30:37 +0000
 Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  adaptations
 
@@ -52,7 +52,7 @@ Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  editor/docks/filesystem_dock.cpp              |   6 +-
  editor/editor_interface.cpp                   |   6 +
  editor/editor_interface.h                     |   1 +
- editor/editor_node.cpp                        | 190 +++++++++++++++++-
+ editor/editor_node.cpp                        | 212 ++++++++++++++++--
  editor/editor_node.h                          |  17 +-
  editor/editor_undo_redo_manager.cpp           |   4 +
  editor/export/editor_export.cpp               |   6 +
@@ -71,12 +71,12 @@ Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  editor/inspector/editor_resource_preview.cpp  |  11 +
  editor/inspector/editor_resource_preview.h    |   4 +
  editor/plugins/editor_plugin.h                |   4 +
- .../project_manager/project_device_limits.cpp | 144 +++++++++++++
- .../project_manager/project_device_limits.h   |  60 ++++++
+ .../project_manager/project_device_limits.cpp | 144 ++++++++++++
+ .../project_manager/project_device_limits.h   |  60 +++++
  editor/project_manager/project_manager.cpp    |  32 ++-
  editor/project_manager/project_manager.h      |   3 +
  editor/register_editor_types.cpp              |   2 +
- editor/run/editor_run.cpp                     |  18 ++
+ editor/run/editor_run.cpp                     |  22 ++
  editor/run/editor_run_bar.cpp                 |   6 +
  editor/run/editor_run_bar.h                   |   1 +
  editor/run/game_view_plugin.cpp               |  18 +-
@@ -94,14 +94,18 @@ Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  editor/scene/editor_scene_tabs.h              |   3 +
  editor/scene/gui/control_editor_plugin.cpp    |   6 +
  editor/scene/gui/control_editor_plugin.h      |   1 +
- editor/script/script_editor_plugin.cpp        |   6 +-
+ editor/script/script_editor_base.h            |   6 +
+ editor/script/script_editor_plugin.cpp        |  13 +-
  editor/script/script_editor_plugin.h          |   2 +-
  editor/script/script_text_editor.cpp          |   2 +-
+ editor/script/text_editor.h                   |   5 +
  editor/settings/editor_build_profile.cpp      |   6 +
  editor/settings/editor_build_profile.h        |   1 +
+ editor/settings/editor_command_palette.cpp    |   6 +
+ editor/settings/editor_command_palette.h      |   1 +
  editor/settings/editor_feature_profile.cpp    |   6 +
  editor/settings/editor_feature_profile.h      |   1 +
- editor/settings/editor_settings.cpp           |  31 ++-
+ editor/settings/editor_settings.cpp           |  36 ++-
  editor/settings/project_settings_editor.cpp   |   6 +
  editor/settings/project_settings_editor.h     |   1 +
  editor/shader/shader_file_editor_plugin.cpp   |   6 +
@@ -132,7 +136,7 @@ Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  servers/rendering/renderer_scene_cull.cpp     |   4 +
  servers/rendering/shader_types.cpp            |   6 +
  servers/rendering/shader_types.h              |   1 +
- 113 files changed, 866 insertions(+), 52 deletions(-)
+ 117 files changed, 918 insertions(+), 56 deletions(-)
  create mode 100644 editor/project_manager/project_device_limits.cpp
  create mode 100644 editor/project_manager/project_device_limits.h
 
@@ -624,7 +628,7 @@ index 9bb588f..26535d0 100644
 +	~EditorInterface();
  };
 diff --git a/editor/editor_node.cpp b/editor/editor_node.cpp
-index 5bc4649..20b3825 100644
+index 5bc4649..8ae62e6 100644
 --- a/editor/editor_node.cpp
 +++ b/editor/editor_node.cpp
 @@ -201,7 +201,7 @@
@@ -636,7 +640,26 @@ index 5bc4649..20b3825 100644
  #include "editor/gui/touch_actions_panel.h"
  #endif // ANDROID_ENABLED
  
-@@ -1043,9 +1043,26 @@ void EditorNode::_notification(int p_what) {
+@@ -420,12 +420,18 @@ void EditorNode::shortcut_input(const Ref<InputEvent> &p_event) {
+ 			editor_main_screen->select(EditorMainScreen::EDITOR_3D);
+ 		} else if (ED_IS_SHORTCUT("editor/editor_script", p_event)) {
+ 			editor_main_screen->select(EditorMainScreen::EDITOR_SCRIPT);
++#ifndef APPLE_EMBEDDED_ENABLED // No Game workspace on iPadOS (see run_game_in_process()).
+ 		} else if (ED_IS_SHORTCUT("editor/editor_game", p_event)) {
+ 			editor_main_screen->select(EditorMainScreen::EDITOR_GAME);
++#endif
+ 		} else if (ED_IS_SHORTCUT("editor/editor_help", p_event)) {
+ 			emit_signal(SNAME("request_help_search"), "");
+ 		} else if (ED_IS_SHORTCUT("editor/editor_assetlib", p_event) && AssetLibraryEditorPlugin::is_available()) {
++#ifdef APPLE_EMBEDDED_ENABLED
++			editor_main_screen->select(EditorMainScreen::EDITOR_ASSETLIB - 1);
++#else
+ 			editor_main_screen->select(EditorMainScreen::EDITOR_ASSETLIB);
++#endif
+ 		} else if (ED_IS_SHORTCUT("editor/editor_next", p_event)) {
+ 			editor_main_screen->select_next();
+ 		} else if (ED_IS_SHORTCUT("editor/editor_prev", p_event)) {
+@@ -1043,9 +1049,26 @@ void EditorNode::_notification(int p_what) {
  				EditorToaster::get_singleton()->popup_str(TTR("Recovery Mode is enabled. Editor functionality has been restricted."), EditorToaster::SEVERITY_WARNING);
  			}
  
@@ -663,7 +686,7 @@ index 5bc4649..20b3825 100644
  		case NOTIFICATION_APPLICATION_FOCUS_IN: {
  			// Restore the original FPS cap after focusing back on the editor.
  			OS::get_singleton()->set_low_processor_usage_mode_sleep_usec(int(EDITOR_GET("interface/editor/timers/low_processor_mode_sleep_usec")));
-@@ -1170,7 +1187,7 @@ void EditorNode::_notification(int p_what) {
+@@ -1170,7 +1193,7 @@ void EditorNode::_notification(int p_what) {
  				EditorHelpHighlighter::get_singleton()->reset_cache();
  			}
  #endif
@@ -672,7 +695,7 @@ index 5bc4649..20b3825 100644
  			if (EditorSettings::get_singleton()->check_changed_settings_in_group("interface/touchscreen/touch_actions_panel")) {
  				_touch_actions_panel_mode_changed();
  			}
-@@ -3871,7 +3888,7 @@ void EditorNode::_menu_option_confirm(int p_option, bool p_confirmed) {
+@@ -3871,7 +3894,7 @@ void EditorNode::_menu_option_confirm(int p_option, bool p_confirmed) {
  			export_template_manager->popup_manager();
  		} break;
  		case EDITOR_CONFIGURE_FBX_IMPORTER: {
@@ -681,7 +704,7 @@ index 5bc4649..20b3825 100644
  			fbx_importer_manager->show_dialog();
  #endif
  		} break;
-@@ -6784,6 +6801,130 @@ void EditorNode::_restart_editor(bool p_goto_project_manager) {
+@@ -6784,6 +6807,130 @@ void EditorNode::_restart_editor(bool p_goto_project_manager) {
  	OS::get_singleton()->set_restart_on_exit(true, args);
  }
  
@@ -812,7 +835,50 @@ index 5bc4649..20b3825 100644
  void EditorNode::_scene_tab_closed(int p_tab) {
  	current_menu_option = SCENE_TAB_CLOSE;
  	tab_closing_idx = p_tab;
-@@ -8075,7 +8216,7 @@ void EditorNode::_build_project_menu() {
+@@ -7849,6 +7996,14 @@ void EditorNode::_resource_loaded(Ref<Resource> p_resource, const String &p_path
+ 
+ void EditorNode::_feature_profile_changed() {
+ 	Ref<EditorFeatureProfile> profile = feature_profile_manager->get_current_profile();
++	// The Game workspace is not added in recovery mode nor on iPadOS, which shifts the buttons after it.
++#ifdef APPLE_EMBEDDED_ENABLED
++	const bool has_game_workspace = false;
++#else
++	const bool has_game_workspace = !Engine::get_singleton()->is_recovery_mode_hint();
++#endif
++	const int assetlib_button = has_game_workspace ? EditorMainScreen::EDITOR_ASSETLIB : EditorMainScreen::EDITOR_ASSETLIB - 1;
++
+ 	if (profile.is_valid()) {
+ 		editor_dock_manager->set_dock_enabled(SignalsDock::get_singleton(), !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_SIGNALS_DOCK));
+ 		editor_dock_manager->set_dock_enabled(GroupsDock::get_singleton(), !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_GROUPS_DOCK));
+@@ -7860,11 +8015,11 @@ void EditorNode::_feature_profile_changed() {
+ 
+ 		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_3D, !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_3D));
+ 		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_SCRIPT, !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_SCRIPT));
+-		if (!Engine::get_singleton()->is_recovery_mode_hint()) {
++		if (has_game_workspace) {
+ 			editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_GAME, !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_GAME));
+ 		}
+ 		if (AssetLibraryEditorPlugin::is_available()) {
+-			editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_ASSETLIB, !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_ASSET_LIB));
++			editor_main_screen->set_button_enabled(assetlib_button, !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_ASSET_LIB));
+ 		}
+ 	} else {
+ 		editor_dock_manager->set_dock_enabled(ImportDock::get_singleton(), true);
+@@ -7874,11 +8029,11 @@ void EditorNode::_feature_profile_changed() {
+ 		editor_dock_manager->set_dock_enabled(history_dock, true);
+ 		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_3D, true);
+ 		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_SCRIPT, true);
+-		if (!Engine::get_singleton()->is_recovery_mode_hint()) {
++		if (has_game_workspace) {
+ 			editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_GAME, true);
+ 		}
+ 		if (AssetLibraryEditorPlugin::is_available()) {
+-			editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_ASSETLIB, true);
++			editor_main_screen->set_button_enabled(assetlib_button, true);
+ 		}
+ 	}
+ 
+@@ -8075,7 +8230,7 @@ void EditorNode::_build_project_menu() {
  	project_menu->add_shortcut(ED_GET_SHORTCUT("editor/export"), PROJECT_EXPORT);
  	project_menu->add_item(TTRC("Pack Project as ZIP..."), PROJECT_PACK_AS_ZIP);
  	project_menu->add_item(TTRC("Install Android Build Template..."), PROJECT_INSTALL_ANDROID_SOURCE);
@@ -821,7 +887,7 @@ index 5bc4649..20b3825 100644
  	project_menu->add_item(TTRC("Open User Data Folder"), PROJECT_OPEN_USER_DATA_FOLDER);
  #endif
  	project_menu->add_separator();
-@@ -8126,7 +8267,7 @@ void EditorNode::_build_settings_menu() {
+@@ -8126,7 +8281,7 @@ void EditorNode::_build_settings_menu() {
  	settings_menu->add_shortcut(ED_GET_SHORTCUT("editor/fullscreen_mode"), EDITOR_TOGGLE_FULLSCREEN);
  	settings_menu->add_separator();
  
@@ -830,7 +896,7 @@ index 5bc4649..20b3825 100644
  	if (EditorPaths::get_singleton()->get_data_dir() == EditorPaths::get_singleton()->get_config_dir()) {
  		// Configuration and data folders are located in the same place.
  		settings_menu->add_item(TTRC("Open Editor Data/Settings Folder"), EDITOR_OPEN_DATA_FOLDER);
-@@ -8140,7 +8281,7 @@ void EditorNode::_build_settings_menu() {
+@@ -8140,7 +8295,7 @@ void EditorNode::_build_settings_menu() {
  
  	settings_menu->add_item(TTRC("Manage Editor Features..."), EDITOR_MANAGE_FEATURE_PROFILES);
  	settings_menu->add_item(TTRC("Manage Export Templates..."), EDITOR_MANAGE_EXPORT_TEMPLATES);
@@ -839,7 +905,7 @@ index 5bc4649..20b3825 100644
  	settings_menu->add_item(TTRC("Configure FBX Importer..."), EDITOR_CONFIGURE_FBX_IMPORTER);
  #endif
  }
-@@ -8250,7 +8391,7 @@ void EditorNode::_update_main_menu_type() {
+@@ -8250,7 +8405,7 @@ void EditorNode::_update_main_menu_type() {
  			}
  		}
  
@@ -848,7 +914,7 @@ index 5bc4649..20b3825 100644
  		// Align main menu icon visually with TouchActionsPanel buttons.
  		menu_btn_spacer = memnew(Control);
  		menu_btn_spacer->set_custom_minimum_size(Vector2(8, 0) * EDSCALE);
-@@ -8292,7 +8433,7 @@ void EditorNode::_bottom_panel_resized() {
+@@ -8292,7 +8447,7 @@ void EditorNode::_bottom_panel_resized() {
  	bottom_panel->set_bottom_panel_offset(center_split->get_split_offset());
  }
  
@@ -857,7 +923,7 @@ index 5bc4649..20b3825 100644
  void EditorNode::_touch_actions_panel_mode_changed() {
  	int panel_mode = EDITOR_GET("interface/touchscreen/touch_actions_panel");
  	switch (panel_mode) {
-@@ -8672,7 +8813,7 @@ EditorNode::EditorNode() {
+@@ -8672,7 +8827,7 @@ EditorNode::EditorNode() {
  
  	main_vbox = memnew(VBoxContainer);
  
@@ -866,7 +932,7 @@ index 5bc4649..20b3825 100644
  	base_vbox = memnew(VBoxContainer);
  	base_vbox->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT, Control::PRESET_MODE_MINSIZE, theme->get_constant(SNAME("window_border_margin"), EditorStringName(Editor)));
  
-@@ -8916,7 +9057,7 @@ EditorNode::EditorNode() {
+@@ -8916,7 +9071,7 @@ EditorNode::EditorNode() {
  	gui_base->add_child(about);
  	feature_profile_manager->connect("current_feature_profile_changed", callable_mp(this, &EditorNode::_feature_profile_changed));
  
@@ -875,7 +941,7 @@ index 5bc4649..20b3825 100644
  	fbx_importer_manager = memnew(FBXImporterManager);
  	gui_base->add_child(fbx_importer_manager);
  #endif
-@@ -9392,9 +9533,13 @@ EditorNode::EditorNode() {
+@@ -9392,9 +9547,13 @@ EditorNode::EditorNode() {
  	add_editor_plugin(memnew(Node3DEditorPlugin));
  	add_editor_plugin(memnew(ScriptEditorPlugin));
  
@@ -889,7 +955,7 @@ index 5bc4649..20b3825 100644
  
  	EditorAudioBuses *audio_bus_editor = EditorAudioBuses::register_editor();
  
-@@ -9660,5 +9805,30 @@ EditorNode::~EditorNode() {
+@@ -9660,5 +9819,30 @@ EditorNode::~EditorNode() {
  
  	file_dialogs.clear();
  
@@ -1530,7 +1596,7 @@ index c66d3bd..f04df87 100644
  	TextureLayeredEditor::finish_shaders();
  	TexturePreview::finish_shaders();
 diff --git a/editor/run/editor_run.cpp b/editor/run/editor_run.cpp
-index 8399876..c09ee88 100644
+index 8399876..c6e4269 100644
 --- a/editor/run/editor_run.cpp
 +++ b/editor/run/editor_run.cpp
 @@ -158,6 +158,24 @@ Error EditorRun::run(const String &p_scene, const String &p_write_movie, const V
@@ -1558,6 +1624,17 @@ index 8399876..c09ee88 100644
  	String exec = OS::get_singleton()->get_executable_path();
  	int instance_count = RunInstancesDialog::get_singleton()->get_instance_count();
  	for (int i = 0; i < instance_count; i++) {
+@@ -240,6 +258,10 @@ ProcessID EditorRun::get_current_process() const {
+ 
+ EditorRun::WindowPlacement EditorRun::get_window_placement() {
+ 	WindowPlacement placement = WindowPlacement();
++#if defined(ANDROID_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
++	// The game window placement settings don't exist on mobile editors (the game is full screen).
++	return placement;
++#endif
+ 	placement.screen = EDITOR_GET("run/window_placement/screen");
+ 	if (placement.screen == -5) {
+ 		// Same as editor
 diff --git a/editor/run/editor_run_bar.cpp b/editor/run/editor_run_bar.cpp
 index 1d61bad..842d5c7 100644
 --- a/editor/run/editor_run_bar.cpp
@@ -1892,8 +1969,25 @@ index 675b72f..6547f4c 100644
  };
  
  class ControlOffsetTransformPreview : public Control {
+diff --git a/editor/script/script_editor_base.h b/editor/script/script_editor_base.h
+index 7ecf5b8..4770d01 100644
+--- a/editor/script/script_editor_base.h
++++ b/editor/script/script_editor_base.h
+@@ -161,6 +161,12 @@ protected:
+ 
+ 	static inline EditMenus *edit_menus = nullptr;
+ 
++public:
++	// The shared menus are freed with the script editor (see ~ScriptEditor()).
++	static void reset_shared_edit_menus() { edit_menus = nullptr; }
++
++protected:
++
+ 	bool editor_enabled = false;
+ 	CodeTextEditor *code_editor = nullptr;
+ 
 diff --git a/editor/script/script_editor_plugin.cpp b/editor/script/script_editor_plugin.cpp
-index 0e60dde..dacc55e 100644
+index 0e60dde..fdbe99c 100644
 --- a/editor/script/script_editor_plugin.cpp
 +++ b/editor/script/script_editor_plugin.cpp
 @@ -1510,12 +1510,12 @@ void ScriptEditor::_notification(int p_what) {
@@ -1920,6 +2014,20 @@ index 0e60dde..dacc55e 100644
  	virtual_keyboard_spacer = memnew(Control);
  	virtual_keyboard_spacer->set_h_size_flags(SIZE_EXPAND_FILL);
  	main_container->add_child(virtual_keyboard_spacer);
+@@ -4186,6 +4186,13 @@ ScriptEditor::ScriptEditor(WindowWrapper *p_wrapper) {
+ 
+ ScriptEditor::~ScriptEditor() {
+ 	memdelete(find_in_files);
++	// The shared edit menus are children of this editor and are freed with it: the next script
++	// editor (if the editor is set up again in this process) must create new ones.
++	TextEditorBase::reset_shared_edit_menus();
++	TextEditor::reset_shared_edit_menus();
++	if (script_editor == this) {
++		script_editor = nullptr;
++	}
+ }
+ 
+ void ScriptEditorPlugin::_focus_another_editor() {
 diff --git a/editor/script/script_editor_plugin.h b/editor/script/script_editor_plugin.h
 index 067c3fb..7519a99 100644
 --- a/editor/script/script_editor_plugin.h
@@ -1946,6 +2054,22 @@ index a609616..e8898f9 100644
  		ensure_focus();
  #endif
  	}
+diff --git a/editor/script/text_editor.h b/editor/script/text_editor.h
+index e41792c..06988f3 100644
+--- a/editor/script/text_editor.h
++++ b/editor/script/text_editor.h
+@@ -39,6 +39,11 @@ class TextEditor : public TextEditorBase {
+ 
+ 	static inline EditMenus *edit_menus = nullptr;
+ 
++public:
++	static void reset_shared_edit_menus() { edit_menus = nullptr; }
++
++private:
++
+ protected:
+ 	virtual void _validate_script() override;
+ 
 diff --git a/editor/settings/editor_build_profile.cpp b/editor/settings/editor_build_profile.cpp
 index 10f549f..8744e81 100644
 --- a/editor/settings/editor_build_profile.cpp
@@ -1970,6 +2094,35 @@ index fb03af9..84aa5a1 100644
  	EditorBuildProfileManager();
 +	~EditorBuildProfileManager();
  };
+diff --git a/editor/settings/editor_command_palette.cpp b/editor/settings/editor_command_palette.cpp
+index 41c45a1..8fbb27b 100644
+--- a/editor/settings/editor_command_palette.cpp
++++ b/editor/settings/editor_command_palette.cpp
+@@ -319,6 +319,12 @@ EditorCommandPalette *EditorCommandPalette::get_singleton() {
+ 	return singleton;
+ }
+ 
++EditorCommandPalette::~EditorCommandPalette() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ EditorCommandPalette::EditorCommandPalette() {
+ 	set_hide_on_ok(false);
+ 	connect(SceneStringName(confirmed), callable_mp(this, &EditorCommandPalette::_confirmed));
+diff --git a/editor/settings/editor_command_palette.h b/editor/settings/editor_command_palette.h
+index 33a8b55..0ad4b9f 100644
+--- a/editor/settings/editor_command_palette.h
++++ b/editor/settings/editor_command_palette.h
+@@ -85,6 +85,7 @@ class EditorCommandPalette : public ConfirmationDialog {
+ 	void _save_history() const;
+ 
+ 	EditorCommandPalette();
++	~EditorCommandPalette();
+ 
+ protected:
+ 	static void _bind_methods();
 diff --git a/editor/settings/editor_feature_profile.cpp b/editor/settings/editor_feature_profile.cpp
 index f7f2aab..8a11342 100644
 --- a/editor/settings/editor_feature_profile.cpp
@@ -1995,7 +2148,7 @@ index cbbe815..d3d63b8 100644
 +	~EditorFeatureProfileManager();
  };
 diff --git a/editor/settings/editor_settings.cpp b/editor/settings/editor_settings.cpp
-index 8dc98d6..f8ed84d 100644
+index 8dc98d6..ea9cf6d 100644
 --- a/editor/settings/editor_settings.cpp
 +++ b/editor/settings/editor_settings.cpp
 @@ -504,7 +504,12 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
@@ -2033,7 +2186,20 @@ index 8dc98d6..f8ed84d 100644
  #endif
  	EDITOR_SETTING(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/appearance/collapse_main_menu", is_android_editor, "")
  
-@@ -976,7 +988,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+@@ -666,7 +678,12 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+ 
+ 	// Directories
+ 	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_GLOBAL_DIR, "filesystem/directories/autoscan_project_path", "", "")
++#ifdef APPLE_EMBEDDED_ENABLED
++	// HOME is the app container; only its Documents folder is visible in the Files app.
++	const String fs_dir_default_project_path = OS::get_singleton()->get_system_dir(OS::SYSTEM_DIR_DOCUMENTS);
++#else
+ 	const String fs_dir_default_project_path = OS::get_singleton()->has_environment("HOME") ? OS::get_singleton()->get_environment("HOME") : OS::get_singleton()->get_system_dir(OS::SYSTEM_DIR_DOCUMENTS);
++#endif
+ 	EDITOR_SETTING_BASIC(Variant::STRING, PROPERTY_HINT_GLOBAL_DIR, "filesystem/directories/default_project_path", fs_dir_default_project_path, "")
+ 
+ 	// On save
+@@ -976,7 +993,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
  	EDITOR_SETTING(Variant::FLOAT, PROPERTY_HINT_RANGE, "editors/3d/navigation_feel/angle_snap_threshold", 10.0, "1,20,0.1,degrees")
  	_initial_set("editors/3d/navigation/show_viewport_rotation_gizmo", true);
  	bool should_show_viewport_navigation_gizmo = false;
@@ -2042,7 +2208,7 @@ index 8dc98d6..f8ed84d 100644
  	should_show_viewport_navigation_gizmo = true;
  #endif
  	_initial_set("editors/3d/navigation/show_viewport_navigation_gizmo", should_show_viewport_navigation_gizmo);
-@@ -1083,7 +1095,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+@@ -1083,7 +1100,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
  	/* Run */
  
  	// Window placement
@@ -2051,7 +2217,7 @@ index 8dc98d6..f8ed84d 100644
  	EDITOR_SETTING_BASIC(Variant::INT, PROPERTY_HINT_ENUM, "run/window_placement/rect", 1, "Top Left,Centered,Custom Position,Force Maximized,Force Fullscreen")
  	// Keep the enum values in sync with the `DisplayServer::SCREEN_` enum.
  	String screen_hints = "Same as Editor:-5,Previous Screen:-4,Next Screen:-3,Primary Screen:-2"; // Note: Main Window Screen:-1 is not used for the main window.
-@@ -1098,14 +1110,21 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+@@ -1098,14 +1115,21 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
  	EDITOR_SETTING_BASIC(Variant::INT, PROPERTY_HINT_ENUM, "run/window_placement/android_window", 0, android_window_hints)
  
  	String game_embed_mode_hints = "Disabled:-1,Use Per-Project Configuration:0,Embed Game:1,Make Game Workspace Floating:2";
@@ -2074,7 +2240,7 @@ index 8dc98d6..f8ed84d 100644
  	EDITOR_SETTING_BASIC(Variant::INT, PROPERTY_HINT_ENUM, "run/window_placement/game_embed_mode", default_game_embed_mode, game_embed_mode_hints);
  
  	// Auto save
-@@ -1179,7 +1198,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
+@@ -1179,7 +1203,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
  #if defined(WEB_ENABLED)
  	// Web platform only supports `gl_compatibility`.
  	const String default_renderer = "gl_compatibility";
@@ -2083,7 +2249,7 @@ index 8dc98d6..f8ed84d 100644
  	// Use more suitable rendering method by default.
  	const String default_renderer = "mobile";
  #else
-@@ -1995,7 +2014,7 @@ float EditorSettings::get_auto_display_scale() {
+@@ -1995,7 +2019,7 @@ float EditorSettings::get_auto_display_scale() {
  	}
  #endif
  
@@ -2092,7 +2258,7 @@ index 8dc98d6..f8ed84d 100644
  	return DisplayServer::get_singleton()->screen_get_max_scale();
  #else
  	const int screen = DisplayServer::get_singleton()->window_get_current_screen();
-@@ -2194,7 +2213,7 @@ void ED_SHORTCUT_OVERRIDE_ARRAY(const String &p_path, const String &p_feature, c
+@@ -2194,7 +2218,7 @@ void ED_SHORTCUT_OVERRIDE_ARRAY(const String &p_path, const String &p_feature, c
  
  	// Only add the override if the OS supports the provided feature.
  	if (!OS::get_singleton()->has_feature(p_feature)) {
