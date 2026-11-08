@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 11:31:22 +0000
+Date: Sun, 8 Nov 2026 12:25:23 +0000
 Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  adaptations
 
@@ -20,29 +20,119 @@ Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
 - Apple hardware keyboards use the macOS key conventions (Cmd/Option).
 ---
  core/input/input_map.cpp                      |  12 +-
+ core/io/file_access_zip.cpp                   |   3 +
+ core/io/resource_format_binary.cpp            |   6 +
+ core/io/resource_format_binary.h              |   1 +
+ core/io/resource_importer.cpp                 |   6 +
+ core/io/resource_importer.h                   |   1 +
+ core/io/resource_uid.cpp                      |   4 +
  core/os/keyboard.cpp                          |   2 +-
+ core/os/midi_driver.h                         |   6 +-
+ core/string/translation_server.cpp            |   6 +
+ core/string/translation_server.h              |   1 +
+ drivers/gles3/rasterizer_gles3.cpp            |   4 +
+ .../animation_blend_space_1d_editor.cpp       |   6 +
+ .../animation_blend_space_1d_editor.h         |   1 +
+ .../animation_blend_space_2d_editor.cpp       |   6 +
+ .../animation_blend_space_2d_editor.h         |   1 +
+ .../animation_blend_tree_editor_plugin.cpp    |   6 +
+ .../animation_blend_tree_editor_plugin.h      |   1 +
+ .../animation_state_machine_editor.cpp        |   6 +
+ .../animation_state_machine_editor.h          |   1 +
+ .../animation_tree_editor_plugin.cpp          |   6 +
+ .../animation/animation_tree_editor_plugin.h  |   1 +
  .../asset_library_editor_plugin.cpp           |   2 +-
+ editor/audio/audio_stream_preview.cpp         |   6 +
+ editor/audio/audio_stream_preview.h           |   1 +
+ .../debug_adapter/debug_adapter_protocol.cpp  |   4 +
+ editor/debugger/editor_debugger_node.cpp      |   6 +
+ editor/debugger/editor_debugger_node.h        |   1 +
+ editor/docks/editor_dock_manager.cpp          |   6 +
+ editor/docks/editor_dock_manager.h            |   1 +
  editor/docks/filesystem_dock.cpp              |   6 +-
- editor/editor_node.cpp                        | 165 ++++++++++++++++--
- editor/editor_node.h                          |  11 +-
+ editor/editor_interface.cpp                   |   6 +
+ editor/editor_interface.h                     |   1 +
+ editor/editor_node.cpp                        | 190 +++++++++++++++++-
+ editor/editor_node.h                          |  17 +-
+ editor/editor_undo_redo_manager.cpp           |   4 +
+ editor/export/editor_export.cpp               |   6 +
+ editor/export/editor_export.h                 |   1 +
+ editor/file_system/editor_file_system.cpp     |   4 +
+ editor/file_system/editor_paths.cpp           |   6 +
+ editor/file_system/editor_paths.h             |   1 +
  editor/gui/editor_file_dialog.cpp             |  10 +-
- editor/inspector/editor_resource_preview.cpp  |   7 +
+ editor/import/3d/scene_import_settings.cpp    |   4 +
+ .../import/audio_stream_import_settings.cpp   |   6 +
+ editor/import/audio_stream_import_settings.h  |   1 +
+ .../import/dynamic_font_import_settings.cpp   |   6 +
+ editor/import/dynamic_font_import_settings.h  |   1 +
+ editor/import/fbx_importer_manager.cpp        |   6 +
+ editor/import/fbx_importer_manager.h          |   1 +
+ editor/inspector/editor_resource_preview.cpp  |  11 +
  editor/inspector/editor_resource_preview.h    |   4 +
- .../project_manager/project_device_limits.cpp | 144 +++++++++++++++
- .../project_manager/project_device_limits.h   |  60 +++++++
- editor/project_manager/project_manager.cpp    |  32 +++-
+ editor/plugins/editor_plugin.h                |   4 +
+ .../project_manager/project_device_limits.cpp | 144 +++++++++++++
+ .../project_manager/project_device_limits.h   |  60 ++++++
+ editor/project_manager/project_manager.cpp    |  32 ++-
  editor/project_manager/project_manager.h      |   3 +
+ editor/register_editor_types.cpp              |   2 +
  editor/run/editor_run.cpp                     |  18 ++
- editor/run/game_view_plugin.cpp               |  12 +-
- editor/run/game_view_plugin.h                 |   8 +-
- editor/scene/editor_scene_tabs.cpp            |   1 -
- editor/scene/editor_scene_tabs.h              |   2 +
+ editor/run/editor_run_bar.cpp                 |   6 +
+ editor/run/editor_run_bar.h                   |   1 +
+ editor/run/game_view_plugin.cpp               |  18 +-
+ editor/run/game_view_plugin.h                 |   9 +-
+ editor/run/run_instances_dialog.cpp           |   6 +
+ editor/run/run_instances_dialog.h             |   1 +
+ editor/scene/2d/tiles/tile_set_editor.cpp     |   6 +
+ editor/scene/2d/tiles/tile_set_editor.h       |   1 +
+ editor/scene/3d/mesh_library_editor_plugin.h  |   5 +-
+ editor/scene/3d/path_3d_editor_plugin.cpp     |   6 +
+ editor/scene/3d/path_3d_editor_plugin.h       |   1 +
+ editor/scene/canvas_item_editor_plugin.cpp    |   6 +
+ editor/scene/canvas_item_editor_plugin.h      |   1 +
+ editor/scene/editor_scene_tabs.cpp            |   7 +-
+ editor/scene/editor_scene_tabs.h              |   3 +
+ editor/scene/gui/control_editor_plugin.cpp    |   6 +
+ editor/scene/gui/control_editor_plugin.h      |   1 +
  editor/script/script_editor_plugin.cpp        |   6 +-
  editor/script/script_editor_plugin.h          |   2 +-
  editor/script/script_text_editor.cpp          |   2 +-
- editor/settings/editor_settings.cpp           |  31 +++-
+ editor/settings/editor_build_profile.cpp      |   6 +
+ editor/settings/editor_build_profile.h        |   1 +
+ editor/settings/editor_feature_profile.cpp    |   6 +
+ editor/settings/editor_feature_profile.h      |   1 +
+ editor/settings/editor_settings.cpp           |  31 ++-
+ editor/settings/project_settings_editor.cpp   |   6 +
+ editor/settings/project_settings_editor.h     |   1 +
+ editor/shader/shader_file_editor_plugin.cpp   |   6 +
+ editor/shader/shader_file_editor_plugin.h     |   1 +
+ .../version_control_editor_plugin.cpp         |   4 +
+ main/performance.cpp                          |   6 +
+ main/performance.h                            |   1 +
+ .../gdscript_language_protocol.h              |   3 +
+ .../editor/editor_import_blend_runner.cpp     |   6 +
+ .../gltf/editor/editor_import_blend_runner.h  |   1 +
+ .../godot_physics_server_2d.h                 |   6 +-
+ .../godot_physics_server_3d.h                 |   6 +-
+ .../2d/nav_mesh_generator_2d.cpp              |   4 +
+ .../3d/nav_mesh_generator_3d.cpp              |   4 +
+ .../3d/navigation_mesh_generator.cpp          |   4 +
+ ...enxr_fb_display_refresh_rate_extension.cpp |   4 +
+ platform/web/api/api.cpp                      |   6 +-
  scene/gui/file_dialog.cpp                     |   5 +-
- 23 files changed, 500 insertions(+), 45 deletions(-)
+ scene/resources/resource_format_text.cpp      |   6 +
+ scene/resources/resource_format_text.h        |   1 +
+ servers/audio/audio_driver_dummy.h            |   6 +-
+ servers/movie_writer/movie_writer.h           |   1 +
+ .../navigation_2d/navigation_server_2d.cpp    |   1 +
+ .../navigation_3d/navigation_server_3d.cpp    |   1 +
+ servers/register_server_types.cpp             |   1 +
+ .../renderer_rd/framebuffer_cache_rd.cpp      |   4 +
+ .../renderer_rd/uniform_set_cache_rd.cpp      |   4 +
+ servers/rendering/renderer_scene_cull.cpp     |   4 +
+ servers/rendering/shader_types.cpp            |   6 +
+ servers/rendering/shader_types.h              |   1 +
+ 113 files changed, 866 insertions(+), 52 deletions(-)
  create mode 100644 editor/project_manager/project_device_limits.cpp
  create mode 100644 editor/project_manager/project_device_limits.h
 
@@ -83,6 +173,88 @@ index d18a781..201483e 100644
  			// OS does not support this override - skip.
  			continue;
  		}
+diff --git a/core/io/file_access_zip.cpp b/core/io/file_access_zip.cpp
+index 2bb9db7..39fb437 100644
+--- a/core/io/file_access_zip.cpp
++++ b/core/io/file_access_zip.cpp
+@@ -227,6 +227,9 @@ ZipArchive::ZipArchive() {
+ 
+ ZipArchive::~ZipArchive() {
+ 	packages.clear();
++	if (instance == this) {
++		instance = nullptr; // Main can be set up again in this process (in-process instances).
++	}
+ }
+ 
+ Error FileAccessZip::open_internal(const String &p_path, int p_mode_flags) {
+diff --git a/core/io/resource_format_binary.cpp b/core/io/resource_format_binary.cpp
+index 2b251da..64fd436 100644
+--- a/core/io/resource_format_binary.cpp
++++ b/core/io/resource_format_binary.cpp
+@@ -2484,3 +2484,9 @@ void ResourceFormatSaverBinary::get_recognized_extensions(const Ref<Resource> &p
+ ResourceFormatSaverBinary::ResourceFormatSaverBinary() {
+ 	singleton = this;
+ }
++
++ResourceFormatSaverBinary::~ResourceFormatSaverBinary() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/core/io/resource_format_binary.h b/core/io/resource_format_binary.h
+index 35e66e7..22c7e68 100644
+--- a/core/io/resource_format_binary.h
++++ b/core/io/resource_format_binary.h
+@@ -190,4 +190,5 @@ public:
+ 	virtual void get_recognized_extensions(const Ref<Resource> &p_resource, List<String> *p_extensions) const override;
+ 
+ 	ResourceFormatSaverBinary();
++	~ResourceFormatSaverBinary();
+ };
+diff --git a/core/io/resource_importer.cpp b/core/io/resource_importer.cpp
+index 566fbea..4a74a94 100644
+--- a/core/io/resource_importer.cpp
++++ b/core/io/resource_importer.cpp
+@@ -578,6 +578,12 @@ ResourceFormatImporter::ResourceFormatImporter() {
+ 	singleton = this;
+ }
+ 
++ResourceFormatImporter::~ResourceFormatImporter() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ //////////////
+ 
+ void ResourceImporter::get_build_dependencies(const String &p_path, HashSet<String> *r_dependencies) {
+diff --git a/core/io/resource_importer.h b/core/io/resource_importer.h
+index f32cac6..2daed82 100644
+--- a/core/io/resource_importer.h
++++ b/core/io/resource_importer.h
+@@ -105,6 +105,7 @@ public:
+ 	Error get_resource_import_info(const String &p_path, StringName &r_type, ResourceUID::ID &r_uid, String &r_import_group_file) const;
+ 
+ 	ResourceFormatImporter();
++	~ResourceFormatImporter();
+ };
+ 
+ class ResourceImporter : public RefCounted {
+diff --git a/core/io/resource_uid.cpp b/core/io/resource_uid.cpp
+index 5e9fff6..d1a7982 100644
+--- a/core/io/resource_uid.cpp
++++ b/core/io/resource_uid.cpp
+@@ -438,6 +438,10 @@ ResourceUID::ResourceUID() {
+ 	singleton = this;
+ }
+ ResourceUID::~ResourceUID() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	if (crypto != nullptr) {
+ 		memdelete((CryptoCore::RandomGenerator *)crypto);
+ 	}
 diff --git a/core/os/keyboard.cpp b/core/os/keyboard.cpp
 index 87bb296..2c514c1 100644
 --- a/core/os/keyboard.cpp
@@ -96,6 +268,197 @@ index 87bb296..2c514c1 100644
  	{Key::META                  ,"Command"},
  	{Key::CMD_OR_CTRL           ,"Command"},
  	{Key::ALT                   ,"Option"},
+diff --git a/core/os/midi_driver.h b/core/os/midi_driver.h
+index 77ecccc..729a4e1 100644
+--- a/core/os/midi_driver.h
++++ b/core/os/midi_driver.h
+@@ -103,7 +103,11 @@ public:
+ 	static MIDIDriver *get_singleton();
+ 
+ 	MIDIDriver();
+-	virtual ~MIDIDriver() = default;
++	virtual ~MIDIDriver() {
++		if (singleton == this) {
++			singleton = nullptr;
++		}
++	}
+ 
+ 	virtual Error open() = 0;
+ 	virtual void close() = 0;
+diff --git a/core/string/translation_server.cpp b/core/string/translation_server.cpp
+index 069e53f..7f84553 100644
+--- a/core/string/translation_server.cpp
++++ b/core/string/translation_server.cpp
+@@ -785,3 +785,9 @@ TranslationServer::TranslationServer() {
+ 
+ 	init_locale_info();
+ }
++
++TranslationServer::~TranslationServer() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/core/string/translation_server.h b/core/string/translation_server.h
+index aa64c81..e7f5676 100644
+--- a/core/string/translation_server.h
++++ b/core/string/translation_server.h
+@@ -174,4 +174,5 @@ public:
+ #endif // TOOLS_ENABLED
+ 
+ 	TranslationServer();
++	~TranslationServer();
+ };
+diff --git a/drivers/gles3/rasterizer_gles3.cpp b/drivers/gles3/rasterizer_gles3.cpp
+index a4208f4..f9bb510 100644
+--- a/drivers/gles3/rasterizer_gles3.cpp
++++ b/drivers/gles3/rasterizer_gles3.cpp
+@@ -392,6 +392,10 @@ RasterizerGLES3::RasterizerGLES3() {
+ }
+ 
+ RasterizerGLES3::~RasterizerGLES3() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ }
+ 
+ void RasterizerGLES3::_blit_render_target_to_screen(DisplayServerEnums::WindowID p_screen, const RenderingServerTypes::BlitToScreen &p_blit, bool p_first) {
+diff --git a/editor/animation/animation_blend_space_1d_editor.cpp b/editor/animation/animation_blend_space_1d_editor.cpp
+index b17226c..8f72e98 100644
+--- a/editor/animation/animation_blend_space_1d_editor.cpp
++++ b/editor/animation/animation_blend_space_1d_editor.cpp
+@@ -1161,3 +1161,9 @@ AnimationNodeBlendSpace1DEditor::AnimationNodeBlendSpace1DEditor() {
+ 
+ 	set_custom_minimum_size(Size2(0, 150 * EDSCALE));
+ }
++
++AnimationNodeBlendSpace1DEditor::~AnimationNodeBlendSpace1DEditor() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/animation/animation_blend_space_1d_editor.h b/editor/animation/animation_blend_space_1d_editor.h
+index f25ba0b..0ae1b7e 100644
+--- a/editor/animation/animation_blend_space_1d_editor.h
++++ b/editor/animation/animation_blend_space_1d_editor.h
+@@ -160,4 +160,5 @@ public:
+ 	virtual bool can_edit(const Ref<AnimationNode> &p_node) override;
+ 	virtual void edit(const Ref<AnimationNode> &p_node) override;
+ 	AnimationNodeBlendSpace1DEditor();
++	~AnimationNodeBlendSpace1DEditor();
+ };
+diff --git a/editor/animation/animation_blend_space_2d_editor.cpp b/editor/animation/animation_blend_space_2d_editor.cpp
+index 60ee4c0..0a8186f 100644
+--- a/editor/animation/animation_blend_space_2d_editor.cpp
++++ b/editor/animation/animation_blend_space_2d_editor.cpp
+@@ -1476,3 +1476,9 @@ AnimationNodeBlendSpace2DEditor::AnimationNodeBlendSpace2DEditor() {
+ 	dragging_selected_attempt = false;
+ 	dragging_blend_position = false;
+ }
++
++AnimationNodeBlendSpace2DEditor::~AnimationNodeBlendSpace2DEditor() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/animation/animation_blend_space_2d_editor.h b/editor/animation/animation_blend_space_2d_editor.h
+index d7a4712..7a440c4 100644
+--- a/editor/animation/animation_blend_space_2d_editor.h
++++ b/editor/animation/animation_blend_space_2d_editor.h
+@@ -174,4 +174,5 @@ public:
+ 	virtual bool can_edit(const Ref<AnimationNode> &p_node) override;
+ 	virtual void edit(const Ref<AnimationNode> &p_node) override;
+ 	AnimationNodeBlendSpace2DEditor();
++	~AnimationNodeBlendSpace2DEditor();
+ };
+diff --git a/editor/animation/animation_blend_tree_editor_plugin.cpp b/editor/animation/animation_blend_tree_editor_plugin.cpp
+index 0617358..7145cfe 100644
+--- a/editor/animation/animation_blend_tree_editor_plugin.cpp
++++ b/editor/animation/animation_blend_tree_editor_plugin.cpp
+@@ -1353,6 +1353,12 @@ AnimationNodeBlendTreeEditor::AnimationNodeBlendTreeEditor() {
+ 	EditorInspector::add_inspector_plugin(animation_node_inspector_plugin);
+ }
+ 
++AnimationNodeBlendTreeEditor::~AnimationNodeBlendTreeEditor() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ // EditorPluginAnimationNodeAnimation
+ 
+ void AnimationNodeAnimationEditor::_open_set_custom_timeline_from_marker_dialog() {
+diff --git a/editor/animation/animation_blend_tree_editor_plugin.h b/editor/animation/animation_blend_tree_editor_plugin.h
+index 280e9c7..a42b823 100644
+--- a/editor/animation/animation_blend_tree_editor_plugin.h
++++ b/editor/animation/animation_blend_tree_editor_plugin.h
+@@ -171,6 +171,7 @@ public:
+ 
+ 	void pan_to_node(const StringName &p_node_name, int p_input_index = -1);
+ 	AnimationNodeBlendTreeEditor();
++	~AnimationNodeBlendTreeEditor();
+ };
+ 
+ // EditorPluginAnimationNodeAnimation
+diff --git a/editor/animation/animation_state_machine_editor.cpp b/editor/animation/animation_state_machine_editor.cpp
+index f0ab4c9..dbfa822 100644
+--- a/editor/animation/animation_state_machine_editor.cpp
++++ b/editor/animation/animation_state_machine_editor.cpp
+@@ -2184,6 +2184,12 @@ AnimationNodeStateMachineEditor::AnimationNodeStateMachineEditor() {
+ 	open_file->connect("file_selected", callable_mp(this, &AnimationNodeStateMachineEditor::_file_opened));
+ }
+ 
++AnimationNodeStateMachineEditor::~AnimationNodeStateMachineEditor() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ void EditorAnimationMultiTransitionEdit::add_transition(const StringName &p_from, const StringName &p_to, Ref<AnimationNodeStateMachineTransition> p_transition) {
+ 	Transition tr;
+ 	tr.from = p_from;
+diff --git a/editor/animation/animation_state_machine_editor.h b/editor/animation/animation_state_machine_editor.h
+index 53dd75c..a73c691 100644
+--- a/editor/animation/animation_state_machine_editor.h
++++ b/editor/animation/animation_state_machine_editor.h
+@@ -305,6 +305,7 @@ public:
+ 	virtual String get_tooltip(const Point2 &p_pos) const override;
+ 
+ 	AnimationNodeStateMachineEditor();
++	~AnimationNodeStateMachineEditor();
+ };
+ 
+ class EditorAnimationMultiTransitionEdit : public RefCounted {
+diff --git a/editor/animation/animation_tree_editor_plugin.cpp b/editor/animation/animation_tree_editor_plugin.cpp
+index c6136a6..92bf5a7 100644
+--- a/editor/animation/animation_tree_editor_plugin.cpp
++++ b/editor/animation/animation_tree_editor_plugin.cpp
+@@ -591,6 +591,12 @@ AnimationTreeEditor::AnimationTreeEditor() {
+ 	error_scroll->hide();
+ }
+ 
++AnimationTreeEditor::~AnimationTreeEditor() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ void AnimationTreeEditorPlugin::edit(Object *p_object) {
+ 	anim_tree_editor->edit(Object::cast_to<AnimationTree>(p_object));
+ }
+diff --git a/editor/animation/animation_tree_editor_plugin.h b/editor/animation/animation_tree_editor_plugin.h
+index ef63e8c..bf1cc9c 100644
+--- a/editor/animation/animation_tree_editor_plugin.h
++++ b/editor/animation/animation_tree_editor_plugin.h
+@@ -104,6 +104,7 @@ public:
+ 	static AnimationTreeEditor *get_singleton() { return singleton; }
+ 	void edit(AnimationTree *p_tree);
+ 	AnimationTreeEditor();
++	~AnimationTreeEditor();
+ };
+ 
+ class AnimationTreeEditorPlugin : public EditorPlugin {
 diff --git a/editor/asset_library/asset_library_editor_plugin.cpp b/editor/asset_library/asset_library_editor_plugin.cpp
 index 5579f77..d1e9733 100644
 --- a/editor/asset_library/asset_library_editor_plugin.cpp
@@ -109,6 +472,102 @@ index 5579f77..d1e9733 100644
  				// Focus the search box automatically when switching to the Templates tab (in the Project Manager)
  				// or switching to the AssetLib tab (in the editor).
  				// The Project Manager's project filter box is automatically focused in the project manager code.
+diff --git a/editor/audio/audio_stream_preview.cpp b/editor/audio/audio_stream_preview.cpp
+index f72b7d6..2cc67bf 100644
+--- a/editor/audio/audio_stream_preview.cpp
++++ b/editor/audio/audio_stream_preview.cpp
+@@ -256,3 +256,9 @@ AudioStreamPreviewGenerator::AudioStreamPreviewGenerator() {
+ 	singleton = this;
+ 	set_process(true);
+ }
++
++AudioStreamPreviewGenerator::~AudioStreamPreviewGenerator() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/audio/audio_stream_preview.h b/editor/audio/audio_stream_preview.h
+index 47be73b..e361ec7 100644
+--- a/editor/audio/audio_stream_preview.h
++++ b/editor/audio/audio_stream_preview.h
+@@ -102,4 +102,5 @@ public:
+ 	Ref<AudioStreamPreview> generate_preview(const Ref<AudioStream> &p_stream);
+ 
+ 	AudioStreamPreviewGenerator();
++	~AudioStreamPreviewGenerator();
+ };
+diff --git a/editor/debugger/debug_adapter/debug_adapter_protocol.cpp b/editor/debugger/debug_adapter/debug_adapter_protocol.cpp
+index 367b956..a9c9ec7 100644
+--- a/editor/debugger/debug_adapter/debug_adapter_protocol.cpp
++++ b/editor/debugger/debug_adapter/debug_adapter_protocol.cpp
+@@ -1269,5 +1269,9 @@ DebugAdapterProtocol::DebugAdapterProtocol() {
+ }
+ 
+ DebugAdapterProtocol::~DebugAdapterProtocol() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	memdelete(parser);
+ }
+diff --git a/editor/debugger/editor_debugger_node.cpp b/editor/debugger/editor_debugger_node.cpp
+index 5201fe2..e87670c 100644
+--- a/editor/debugger/editor_debugger_node.cpp
++++ b/editor/debugger/editor_debugger_node.cpp
+@@ -111,6 +111,12 @@ EditorDebuggerNode::EditorDebuggerNode() {
+ 	EditorRunBar::get_singleton()->get_pause_button()->connect(SceneStringName(pressed), callable_mp(this, &EditorDebuggerNode::_paused));
+ }
+ 
++EditorDebuggerNode::~EditorDebuggerNode() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ ScriptEditorDebugger *EditorDebuggerNode::_add_debugger() {
+ 	ScriptEditorDebugger *node = memnew(ScriptEditorDebugger);
+ 
+diff --git a/editor/debugger/editor_debugger_node.h b/editor/debugger/editor_debugger_node.h
+index 2f21a71..90eb439 100644
+--- a/editor/debugger/editor_debugger_node.h
++++ b/editor/debugger/editor_debugger_node.h
+@@ -127,6 +127,7 @@ private:
+ 	friend class DebugAdapterParser;
+ 	static EditorDebuggerNode *singleton;
+ 	EditorDebuggerNode();
++	~EditorDebuggerNode();
+ 
+ protected:
+ 	void _debugger_stopped(int p_id);
+diff --git a/editor/docks/editor_dock_manager.cpp b/editor/docks/editor_dock_manager.cpp
+index 50b991a..8116da6 100644
+--- a/editor/docks/editor_dock_manager.cpp
++++ b/editor/docks/editor_dock_manager.cpp
+@@ -843,6 +843,12 @@ EditorDockManager::EditorDockManager() {
+ 	EditorNode::get_singleton()->get_gui_base()->connect(SceneStringName(theme_changed), callable_mp(this, &EditorDockManager::update_docks_menu));
+ }
+ 
++EditorDockManager::~EditorDockManager() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ ////////////////////////////////////////////////
+ ////////////////////////////////////////////////
+ 
+diff --git a/editor/docks/editor_dock_manager.h b/editor/docks/editor_dock_manager.h
+index caf7277..91e1147 100644
+--- a/editor/docks/editor_dock_manager.h
++++ b/editor/docks/editor_dock_manager.h
+@@ -157,6 +157,7 @@ public:
+ 	void remove_dock(EditorDock *p_dock);
+ 
+ 	EditorDockManager();
++	~EditorDockManager();
+ };
+ 
+ class DockSlotGrid : public Control {
 diff --git a/editor/docks/filesystem_dock.cpp b/editor/docks/filesystem_dock.cpp
 index 232fc24..e406526 100644
 --- a/editor/docks/filesystem_dock.cpp
@@ -140,8 +599,32 @@ index 232fc24..e406526 100644
  	// Opening the system file manager or opening in an external program is not supported on the Android and web editors.
  	ED_SHORTCUT("filesystem_dock/show_in_explorer", TTRC("Open in File Manager"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::R);
  	ED_SHORTCUT("filesystem_dock/open_in_external_program", TTRC("Open in External Program"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::E);
+diff --git a/editor/editor_interface.cpp b/editor/editor_interface.cpp
+index dcb1c61..0234c79 100644
+--- a/editor/editor_interface.cpp
++++ b/editor/editor_interface.cpp
+@@ -965,3 +965,9 @@ EditorInterface::EditorInterface() {
+ 	ERR_FAIL_COND(singleton != nullptr);
+ 	singleton = this;
+ }
++
++EditorInterface::~EditorInterface() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/editor_interface.h b/editor/editor_interface.h
+index 9bb588f..26535d0 100644
+--- a/editor/editor_interface.h
++++ b/editor/editor_interface.h
+@@ -212,4 +212,5 @@ public:
+ 	static void free();
+ 
+ 	EditorInterface();
++	~EditorInterface();
+ };
 diff --git a/editor/editor_node.cpp b/editor/editor_node.cpp
-index 5bc4649..e422227 100644
+index 5bc4649..20b3825 100644
 --- a/editor/editor_node.cpp
 +++ b/editor/editor_node.cpp
 @@ -201,7 +201,7 @@
@@ -406,8 +889,39 @@ index 5bc4649..e422227 100644
  
  	EditorAudioBuses *audio_bus_editor = EditorAudioBuses::register_editor();
  
+@@ -9660,5 +9805,30 @@ EditorNode::~EditorNode() {
+ 
+ 	file_dialogs.clear();
+ 
++	// Restore the process-wide state the editor changed in its constructor, as a game (or the
++	// project manager) can run next in the same process (in-process instances, e.g. on iPadOS).
++	Resource::_get_local_scene_func = nullptr;
++	PortableCompressedTexture2D::set_keep_all_compressed_buffers(false);
++	ScriptServer::set_scripting_enabled(true);
++	SceneState::set_disable_placeholders(false);
++	SceneState::set_instantiation_warning_notify_func(nullptr);
++	ResourceLoader::set_create_missing_resources_if_class_unavailable(false);
++	ResourceLoader::set_abort_on_missing_resources(true);
++	ResourceLoader::set_error_notify_func(nullptr);
++	ResourceLoader::set_dependency_error_notify_func(nullptr);
++	ResourceLoader::set_load_callback(nullptr);
++	ResourceSaver::set_save_callback(nullptr);
++	FileAccess::set_backup_save(false);
++	FileAccess::set_file_close_fail_notify_callback(nullptr);
++	FileDialog::set_default_show_hidden_files(false);
++	FileDialog::set_default_display_mode(FileDialog::DISPLAY_THUMBNAILS);
++	FileDialog::set_get_icon_callback(Callable());
++	FileDialog::set_get_thumbnail_callback(Callable());
++	AcceptDialog::set_swap_cancel_ok(false);
++	Control::set_root_layout_direction(0);
++	Window::set_root_layout_direction(0);
++	EditorScale::set_scale(1.0);
++	DisplayServer::set_early_window_clear_color_override(false);
++
+ 	singleton = nullptr;
+ }
 diff --git a/editor/editor_node.h b/editor/editor_node.h
-index f683e13..1eca773 100644
+index f683e13..df63ac1 100644
 --- a/editor/editor_node.h
 +++ b/editor/editor_node.h
 @@ -104,7 +104,7 @@ class ProjectSettingsEditor;
@@ -428,7 +942,20 @@ index f683e13..1eca773 100644
  	VBoxContainer *base_vbox = nullptr; // It only contains the title_bar and main_hbox.
  	HBoxContainer *main_hbox = nullptr; // It only contains the touch_actions_panel and main_vbox.
  	TouchActionsPanel *touch_actions_panel = nullptr;
-@@ -1020,6 +1020,13 @@ public:
+@@ -782,7 +782,11 @@ public:
+ 	static void remove_extension_editor_plugin(const StringName &p_class_name);
+ 
+ 	static void add_plugin_init_callback(EditorPluginInitializeCallback p_callback);
+-	static void add_init_callback(EditorNodeInitCallback p_callback) { _init_callbacks.push_back(p_callback); }
++	static void add_init_callback(EditorNodeInitCallback p_callback) {
++		if (!_init_callbacks.has(p_callback)) { // Modules register again if the editor is set up again in-process.
++			_init_callbacks.push_back(p_callback);
++		}
++	}
+ 	static void add_build_callback(EditorBuildCallback p_callback);
+ 
+ 	static bool immediate_confirmation_dialog(const String &p_text, const String &p_ok_text = TTR("Ok"), const String &p_cancel_text = TTR("Cancel"), uint32_t p_wrap_width = 0);
+@@ -1020,6 +1024,13 @@ public:
  	void save_before_run();
  	void try_autosave();
  	void restart_editor(bool p_goto_project_manager = false);
@@ -442,6 +969,84 @@ index f683e13..1eca773 100644
  	void unload_editor_addons();
  
  	void open_setting_override(const String &p_property);
+diff --git a/editor/editor_undo_redo_manager.cpp b/editor/editor_undo_redo_manager.cpp
+index 7ef8d6a..552138c 100644
+--- a/editor/editor_undo_redo_manager.cpp
++++ b/editor/editor_undo_redo_manager.cpp
+@@ -589,6 +589,10 @@ EditorUndoRedoManager::EditorUndoRedoManager() {
+ }
+ 
+ EditorUndoRedoManager::~EditorUndoRedoManager() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	for (const KeyValue<int, History> &E : history_map) {
+ 		discard_history(E.key, false);
+ 	}
+diff --git a/editor/export/editor_export.cpp b/editor/export/editor_export.cpp
+index 1d10838..9b6c513 100644
+--- a/editor/export/editor_export.cpp
++++ b/editor/export/editor_export.cpp
+@@ -539,3 +539,9 @@ EditorExport::EditorExport() {
+ 	singleton = this;
+ 	set_process(true);
+ }
++
++EditorExport::~EditorExport() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/export/editor_export.h b/editor/export/editor_export.h
+index e20baf4..ab89b14 100644
+--- a/editor/export/editor_export.h
++++ b/editor/export/editor_export.h
+@@ -99,4 +99,5 @@ public:
+ 	void connect_presets_runnable_updated(const Callable &p_target);
+ 
+ 	EditorExport();
++	~EditorExport();
+ };
+diff --git a/editor/file_system/editor_file_system.cpp b/editor/file_system/editor_file_system.cpp
+index 1a9e609..0ef8cab 100644
+--- a/editor/file_system/editor_file_system.cpp
++++ b/editor/file_system/editor_file_system.cpp
+@@ -3825,6 +3825,10 @@ EditorFileSystem::EditorFileSystem() {
+ }
+ 
+ EditorFileSystem::~EditorFileSystem() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	if (filesystem) {
+ 		memdelete(filesystem);
+ 	}
+diff --git a/editor/file_system/editor_paths.cpp b/editor/file_system/editor_paths.cpp
+index 2738dd0..6a9ea2f 100644
+--- a/editor/file_system/editor_paths.cpp
++++ b/editor/file_system/editor_paths.cpp
+@@ -291,3 +291,9 @@ EditorPaths::EditorPaths() {
+ 		}
+ 	}
+ }
++
++EditorPaths::~EditorPaths() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/file_system/editor_paths.h b/editor/file_system/editor_paths.h
+index 4dcf37b..d51116b 100644
+--- a/editor/file_system/editor_paths.h
++++ b/editor/file_system/editor_paths.h
+@@ -81,4 +81,5 @@ public:
+ 	static void free();
+ 
+ 	EditorPaths();
++	~EditorPaths();
+ };
 diff --git a/editor/gui/editor_file_dialog.cpp b/editor/gui/editor_file_dialog.cpp
 index ef7927d..746cec8 100644
 --- a/editor/gui/editor_file_dialog.cpp
@@ -463,8 +1068,94 @@ index ef7927d..746cec8 100644
  	// Native file dialog on Android, returns a file URI instead of a path and does not support res://, user://, or options. This requires editor-side changes to handle properly, so disabling it for now.
  	return false;
  #else
+diff --git a/editor/import/3d/scene_import_settings.cpp b/editor/import/3d/scene_import_settings.cpp
+index 3bad35d..098660d 100644
+--- a/editor/import/3d/scene_import_settings.cpp
++++ b/editor/import/3d/scene_import_settings.cpp
+@@ -2001,5 +2001,9 @@ SceneImportSettingsDialog::SceneImportSettingsDialog() {
+ }
+ 
+ SceneImportSettingsDialog::~SceneImportSettingsDialog() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	memdelete(scene_import_settings_data);
+ }
+diff --git a/editor/import/audio_stream_import_settings.cpp b/editor/import/audio_stream_import_settings.cpp
+index 7764be4..7231bbe 100644
+--- a/editor/import/audio_stream_import_settings.cpp
++++ b/editor/import/audio_stream_import_settings.cpp
+@@ -705,3 +705,9 @@ AudioStreamImportSettingsDialog::AudioStreamImportSettingsDialog() {
+ 
+ 	singleton = this;
+ }
++
++AudioStreamImportSettingsDialog::~AudioStreamImportSettingsDialog() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/import/audio_stream_import_settings.h b/editor/import/audio_stream_import_settings.h
+index a345f71..4122319 100644
+--- a/editor/import/audio_stream_import_settings.h
++++ b/editor/import/audio_stream_import_settings.h
+@@ -119,4 +119,5 @@ public:
+ 	static AudioStreamImportSettingsDialog *get_singleton() { return singleton; }
+ 
+ 	AudioStreamImportSettingsDialog();
++	~AudioStreamImportSettingsDialog();
+ };
+diff --git a/editor/import/dynamic_font_import_settings.cpp b/editor/import/dynamic_font_import_settings.cpp
+index daea3f0..ca3df67 100644
+--- a/editor/import/dynamic_font_import_settings.cpp
++++ b/editor/import/dynamic_font_import_settings.cpp
+@@ -1320,3 +1320,9 @@ DynamicFontImportSettingsDialog::DynamicFontImportSettingsDialog() {
+ 	set_ok_button_text(TTR("Reimport"));
+ 	set_cancel_button_text(TTR("Close"));
+ }
++
++DynamicFontImportSettingsDialog::~DynamicFontImportSettingsDialog() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/import/dynamic_font_import_settings.h b/editor/import/dynamic_font_import_settings.h
+index 9c36a82..f8a002e 100644
+--- a/editor/import/dynamic_font_import_settings.h
++++ b/editor/import/dynamic_font_import_settings.h
+@@ -169,4 +169,5 @@ public:
+ 	static DynamicFontImportSettingsDialog *get_singleton();
+ 
+ 	DynamicFontImportSettingsDialog();
++	~DynamicFontImportSettingsDialog();
+ };
+diff --git a/editor/import/fbx_importer_manager.cpp b/editor/import/fbx_importer_manager.cpp
+index dcfed30..b945b22 100644
+--- a/editor/import/fbx_importer_manager.cpp
++++ b/editor/import/fbx_importer_manager.cpp
+@@ -185,3 +185,9 @@ FBXImporterManager::FBXImporterManager() {
+ 
+ 	add_child(browse_dialog);
+ }
++
++FBXImporterManager::~FBXImporterManager() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/import/fbx_importer_manager.h b/editor/import/fbx_importer_manager.h
+index 667e519..1bee199 100644
+--- a/editor/import/fbx_importer_manager.h
++++ b/editor/import/fbx_importer_manager.h
+@@ -62,4 +62,5 @@ public:
+ 	void show_dialog(bool p_exclusive = false);
+ 
+ 	FBXImporterManager();
++	~FBXImporterManager();
+ };
 diff --git a/editor/inspector/editor_resource_preview.cpp b/editor/inspector/editor_resource_preview.cpp
-index 1673636..db4d0d7 100644
+index 1673636..40ac727 100644
 --- a/editor/inspector/editor_resource_preview.cpp
 +++ b/editor/inspector/editor_resource_preview.cpp
 @@ -528,6 +528,13 @@ void EditorResourcePreview::queue_resource_preview(const String &p_path, const C
@@ -481,6 +1172,16 @@ index 1673636..db4d0d7 100644
  void EditorResourcePreview::add_preview_generator(const Ref<EditorResourcePreviewGenerator> &p_generator) {
  	preview_generators.push_back(p_generator);
  }
+@@ -624,5 +631,9 @@ EditorResourcePreview::EditorResourcePreview() {
+ }
+ 
+ EditorResourcePreview::~EditorResourcePreview() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	stop();
+ }
 diff --git a/editor/inspector/editor_resource_preview.h b/editor/inspector/editor_resource_preview.h
 index cb2be1d..7ab3d00 100644
 --- a/editor/inspector/editor_resource_preview.h
@@ -496,6 +1197,19 @@ index cb2be1d..7ab3d00 100644
  	void add_preview_generator(const Ref<EditorResourcePreviewGenerator> &p_generator);
  	void remove_preview_generator(const Ref<EditorResourcePreviewGenerator> &p_generator);
  	void check_for_invalidation(const String &p_path);
+diff --git a/editor/plugins/editor_plugin.h b/editor/plugins/editor_plugin.h
+index a12ff25..a490c01 100644
+--- a/editor/plugins/editor_plugin.h
++++ b/editor/plugins/editor_plugin.h
+@@ -308,4 +308,8 @@ public:
+ 		ERR_FAIL_COND(creation_func_count >= MAX_CREATE_FUNCS);
+ 		creation_funcs[creation_func_count++] = p_func;
+ 	}
++
++	// The editor and modules register their plugins again when the editor is set up again in the
++	// same process (in-process instances).
++	static void clear_create_funcs() { creation_func_count = 0; }
+ };
 diff --git a/editor/project_manager/project_device_limits.cpp b/editor/project_manager/project_device_limits.cpp
 new file mode 100644
 index 0000000..c2e846b
@@ -802,6 +1516,19 @@ index 501cdb0..f06adf4 100644
  	VBoxContainer *ask_update_vb = nullptr;
  	Label *ask_update_label = nullptr;
  	CheckBox *ask_update_backup = nullptr;
+diff --git a/editor/register_editor_types.cpp b/editor/register_editor_types.cpp
+index c66d3bd..f04df87 100644
+--- a/editor/register_editor_types.cpp
++++ b/editor/register_editor_types.cpp
+@@ -334,6 +334,8 @@ void register_editor_types() {
+ void unregister_editor_types() {
+ 	OS::get_singleton()->benchmark_begin_measure("Editor", "Unregister Types");
+ 
++	EditorPlugins::clear_create_funcs();
++
+ 	Texture3DEditor::finish_shaders();
+ 	TextureLayeredEditor::finish_shaders();
+ 	TexturePreview::finish_shaders();
 diff --git a/editor/run/editor_run.cpp b/editor/run/editor_run.cpp
 index 8399876..c09ee88 100644
 --- a/editor/run/editor_run.cpp
@@ -831,11 +1558,45 @@ index 8399876..c09ee88 100644
  	String exec = OS::get_singleton()->get_executable_path();
  	int instance_count = RunInstancesDialog::get_singleton()->get_instance_count();
  	for (int i = 0; i < instance_count; i++) {
+diff --git a/editor/run/editor_run_bar.cpp b/editor/run/editor_run_bar.cpp
+index 1d61bad..842d5c7 100644
+--- a/editor/run/editor_run_bar.cpp
++++ b/editor/run/editor_run_bar.cpp
+@@ -725,3 +725,9 @@ EditorRunBar::EditorRunBar() {
+ 	write_movie_button->set_accessibility_name(TTRC("Enable Movie Maker Mode"));
+ 	write_movie_button->set_flat(false);
+ }
++
++EditorRunBar::~EditorRunBar() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/run/editor_run_bar.h b/editor/run/editor_run_bar.h
+index 98df6e1..694dc59 100644
+--- a/editor/run/editor_run_bar.h
++++ b/editor/run/editor_run_bar.h
+@@ -144,4 +144,5 @@ public:
+ 	HBoxContainer *get_buttons_container();
+ 
+ 	EditorRunBar();
++	~EditorRunBar();
+ };
 diff --git a/editor/run/game_view_plugin.cpp b/editor/run/game_view_plugin.cpp
-index 80b8af9..d792805 100644
+index 80b8af9..f35488c 100644
 --- a/editor/run/game_view_plugin.cpp
 +++ b/editor/run/game_view_plugin.cpp
-@@ -1699,7 +1699,7 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embe
+@@ -1695,11 +1695,17 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embe
+ 	EditorFeatureProfileManager::get_singleton()->connect("current_feature_profile_changed", callable_mp(this, &GameView::_feature_profile_changed));
+ }
+ 
++GameView::~GameView() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ ///////
  
  void GameViewPluginBase::selected_notify() {
  	if (_is_window_wrapper_enabled()) {
@@ -844,7 +1605,7 @@ index 80b8af9..d792805 100644
  		notify_main_screen_changed(get_plugin_name());
  #else
  		window_wrapper->grab_window_focus();
-@@ -1708,7 +1708,7 @@ void GameViewPluginBase::selected_notify() {
+@@ -1708,7 +1714,7 @@ void GameViewPluginBase::selected_notify() {
  	}
  }
  
@@ -853,7 +1614,7 @@ index 80b8af9..d792805 100644
  void GameViewPluginBase::make_visible(bool p_visible) {
  	if (p_visible) {
  		window_wrapper->show();
-@@ -1747,7 +1747,7 @@ void GameViewPluginBase::setup(Ref<GameViewDebugger> p_debugger, EmbeddedProcess
+@@ -1747,7 +1753,7 @@ void GameViewPluginBase::setup(Ref<GameViewDebugger> p_debugger, EmbeddedProcess
  void GameViewPluginBase::_notification(int p_what) {
  	switch (p_what) {
  		case NOTIFICATION_TRANSLATION_CHANGED: {
@@ -862,7 +1623,7 @@ index 80b8af9..d792805 100644
  			window_wrapper->set_window_title(vformat(TTR("%s - Godot Engine"), TTR("Game Workspace")));
  #endif
  		} break;
-@@ -1779,7 +1779,7 @@ void GameViewPluginBase::_focus_another_editor() {
+@@ -1779,7 +1785,7 @@ void GameViewPluginBase::_focus_another_editor() {
  }
  
  bool GameViewPluginBase::_is_window_wrapper_enabled() const {
@@ -871,7 +1632,7 @@ index 80b8af9..d792805 100644
  	return true;
  #else
  	return window_wrapper->get_window_enabled();
-@@ -1787,13 +1787,13 @@ bool GameViewPluginBase::_is_window_wrapper_enabled() const {
+@@ -1787,13 +1793,13 @@ bool GameViewPluginBase::_is_window_wrapper_enabled() const {
  }
  
  GameViewPluginBase::GameViewPluginBase() {
@@ -888,10 +1649,16 @@ index 80b8af9..d792805 100644
  	game_view_debugger.instantiate();
  	EmbeddedProcess *embedded_process = memnew(EmbeddedProcess);
 diff --git a/editor/run/game_view_plugin.h b/editor/run/game_view_plugin.h
-index ddcc21d..82c7802 100644
+index ddcc21d..3236553 100644
 --- a/editor/run/game_view_plugin.h
 +++ b/editor/run/game_view_plugin.h
-@@ -289,7 +289,7 @@ public:
+@@ -284,12 +284,13 @@ public:
+ 	void get_window_layout(Ref<ConfigFile> p_layout);
+ 
+ 	GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embedded_process, WindowWrapper *p_wrapper);
++	~GameView();
+ };
+ 
  class GameViewPluginBase : public EditorPlugin {
  	GDCLASS(GameViewPluginBase, EditorPlugin);
  
@@ -900,7 +1667,7 @@ index ddcc21d..82c7802 100644
  	GameView *game_view = nullptr;
  	WindowWrapper *window_wrapper = nullptr;
  #endif // ANDROID_ENABLED
-@@ -298,7 +298,7 @@ class GameViewPluginBase : public EditorPlugin {
+@@ -298,7 +299,7 @@ class GameViewPluginBase : public EditorPlugin {
  
  	String last_editor;
  
@@ -909,7 +1676,7 @@ index ddcc21d..82c7802 100644
  	void _window_visibility_changed(bool p_visible);
  #endif // ANDROID_ENABLED
  	void _save_last_editor(const String &p_editor);
-@@ -307,7 +307,7 @@ class GameViewPluginBase : public EditorPlugin {
+@@ -307,7 +308,7 @@ class GameViewPluginBase : public EditorPlugin {
  
  protected:
  	void _notification(int p_what);
@@ -918,7 +1685,7 @@ index ddcc21d..82c7802 100644
  	void setup(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embedded_process);
  #endif
  
-@@ -320,7 +320,7 @@ public:
+@@ -320,7 +321,7 @@ public:
  
  	Ref<GameViewDebugger> get_debugger() const { return debugger; }
  
@@ -927,8 +1694,136 @@ index ddcc21d..82c7802 100644
  	virtual void make_visible(bool p_visible) override;
  
  	virtual void set_window_layout(Ref<ConfigFile> p_layout) override;
+diff --git a/editor/run/run_instances_dialog.cpp b/editor/run/run_instances_dialog.cpp
+index 41b6217..460f76b 100644
+--- a/editor/run/run_instances_dialog.cpp
++++ b/editor/run/run_instances_dialog.cpp
+@@ -406,6 +406,12 @@ RunInstancesDialog::RunInstancesDialog() {
+ 	instance_tree->connect("item_edited", callable_mp(this, &RunInstancesDialog::_start_instance_timer));
+ }
+ 
++RunInstancesDialog::~RunInstancesDialog() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ bool RunInstancesDialog::InstanceData::overrides_run_args() const {
+ 	return item->is_checked(COLUMN_OVERRIDE_ARGS);
+ }
+diff --git a/editor/run/run_instances_dialog.h b/editor/run/run_instances_dialog.h
+index ad2d9da..a33f796 100644
+--- a/editor/run/run_instances_dialog.h
++++ b/editor/run/run_instances_dialog.h
+@@ -102,4 +102,5 @@ public:
+ 
+ 	static RunInstancesDialog *get_singleton() { return singleton; }
+ 	RunInstancesDialog();
++	~RunInstancesDialog();
+ };
+diff --git a/editor/scene/2d/tiles/tile_set_editor.cpp b/editor/scene/2d/tiles/tile_set_editor.cpp
+index e2f8613..07bdfa1 100644
+--- a/editor/scene/2d/tiles/tile_set_editor.cpp
++++ b/editor/scene/2d/tiles/tile_set_editor.cpp
+@@ -1002,6 +1002,12 @@ TileSetEditor::TileSetEditor() {
+ 	EditorNode::get_editor_data().add_undo_redo_inspector_hook_callback(callable_mp(this, &TileSetEditor::_undo_redo_inspector_callback));
+ }
+ 
++TileSetEditor::~TileSetEditor() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ void TileSourceInspectorPlugin::_show_id_edit_dialog(Object *p_for_source) {
+ 	if (!id_edit_dialog) {
+ 		id_edit_dialog = memnew(ConfirmationDialog);
+diff --git a/editor/scene/2d/tiles/tile_set_editor.h b/editor/scene/2d/tiles/tile_set_editor.h
+index e819b80..5d8debf 100644
+--- a/editor/scene/2d/tiles/tile_set_editor.h
++++ b/editor/scene/2d/tiles/tile_set_editor.h
+@@ -125,6 +125,7 @@ public:
+ 	void register_split(SplitContainer *p_split);
+ 
+ 	TileSetEditor();
++	~TileSetEditor();
+ };
+ 
+ class TileSourceInspectorPlugin : public EditorInspectorPlugin {
+diff --git a/editor/scene/3d/mesh_library_editor_plugin.h b/editor/scene/3d/mesh_library_editor_plugin.h
+index fa5d638..74fba9b 100644
+--- a/editor/scene/3d/mesh_library_editor_plugin.h
++++ b/editor/scene/3d/mesh_library_editor_plugin.h
+@@ -140,5 +140,8 @@ public:
+ 	void open_editor();
+ 
+ 	MeshLibraryEditorPlugin();
+-	~MeshLibraryEditorPlugin() { singleton = nullptr; }
++	~MeshLibraryEditorPlugin() {
++		if (singleton == this) {
++			singleton = nullptr;
++		} singleton = nullptr; }
+ };
+diff --git a/editor/scene/3d/path_3d_editor_plugin.cpp b/editor/scene/3d/path_3d_editor_plugin.cpp
+index 654bf24..a4e7d30 100644
+--- a/editor/scene/3d/path_3d_editor_plugin.cpp
++++ b/editor/scene/3d/path_3d_editor_plugin.cpp
+@@ -1118,6 +1118,12 @@ Path3DEditorPlugin::Path3DEditorPlugin() {
+ 	Node3DEditor::get_singleton()->add_control_to_menu_panel(topmenu_bar);
+ }
+ 
++Path3DEditorPlugin::~Path3DEditorPlugin() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ Ref<EditorNode3DGizmo> Path3DGizmoPlugin::create_gizmo(Node3D *p_spatial) {
+ 	Ref<Path3DGizmo> ref;
+ 
+diff --git a/editor/scene/3d/path_3d_editor_plugin.h b/editor/scene/3d/path_3d_editor_plugin.h
+index b935735..7d1f0d0 100644
+--- a/editor/scene/3d/path_3d_editor_plugin.h
++++ b/editor/scene/3d/path_3d_editor_plugin.h
+@@ -185,6 +185,7 @@ public:
+ 	void set_handle_clicked(bool clicked) { handle_clicked = clicked; }
+ 
+ 	Path3DEditorPlugin();
++	~Path3DEditorPlugin();
+ 
+ private:
+ 	struct EditData {
+diff --git a/editor/scene/canvas_item_editor_plugin.cpp b/editor/scene/canvas_item_editor_plugin.cpp
+index c939e3a..bc8047b 100644
+--- a/editor/scene/canvas_item_editor_plugin.cpp
++++ b/editor/scene/canvas_item_editor_plugin.cpp
+@@ -6136,6 +6136,12 @@ CanvasItemEditor::CanvasItemEditor() {
+ 	callable_mp(this, &CanvasItemEditor::set_state).call_deferred(get_state());
+ }
+ 
++CanvasItemEditor::~CanvasItemEditor() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ CanvasItemEditor *CanvasItemEditor::singleton = nullptr;
+ 
+ void CanvasItemEditorPlugin::edit(Object *p_object) {
+diff --git a/editor/scene/canvas_item_editor_plugin.h b/editor/scene/canvas_item_editor_plugin.h
+index 1982fda..748a05e 100644
+--- a/editor/scene/canvas_item_editor_plugin.h
++++ b/editor/scene/canvas_item_editor_plugin.h
+@@ -631,6 +631,7 @@ public:
+ 	EditorSelection *editor_selection = nullptr;
+ 
+ 	CanvasItemEditor();
++	~CanvasItemEditor();
+ };
+ 
+ class CanvasItemEditorPlugin : public EditorPlugin {
 diff --git a/editor/scene/editor_scene_tabs.cpp b/editor/scene/editor_scene_tabs.cpp
-index 3878784..96d63f0 100644
+index 3878784..a69aa39 100644
 --- a/editor/scene/editor_scene_tabs.cpp
 +++ b/editor/scene/editor_scene_tabs.cpp
 @@ -261,7 +261,6 @@ void EditorSceneTabs::_update_scene_list() {
@@ -939,8 +1834,18 @@ index 3878784..96d63f0 100644
  	tab_preview_panel->hide();
  
  	if (menu_initialized && scene_tabs->get_tab_count() == EditorNode::get_editor_data().get_edited_scene_count()) {
+@@ -526,3 +525,9 @@ EditorSceneTabs::EditorSceneTabs() {
+ 
+ 	ProjectSettings::get_singleton()->connect("settings_changed", callable_mp(this, &EditorSceneTabs::_project_settings_changed));
+ }
++
++EditorSceneTabs::~EditorSceneTabs() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
 diff --git a/editor/scene/editor_scene_tabs.h b/editor/scene/editor_scene_tabs.h
-index 78a3070..9d7a6e2 100644
+index 78a3070..e4cfa4e 100644
 --- a/editor/scene/editor_scene_tabs.h
 +++ b/editor/scene/editor_scene_tabs.h
 @@ -42,6 +42,8 @@ class TabBar;
@@ -952,6 +1857,41 @@ index 78a3070..9d7a6e2 100644
  	GDCLASS(EditorSceneTabs, MarginContainer);
  
  	inline static EditorSceneTabs *singleton = nullptr;
+@@ -113,4 +115,5 @@ public:
+ 	void update_scene_tabs();
+ 
+ 	EditorSceneTabs();
++	~EditorSceneTabs();
+ };
+diff --git a/editor/scene/gui/control_editor_plugin.cpp b/editor/scene/gui/control_editor_plugin.cpp
+index bc46f7b..22e293f 100644
+--- a/editor/scene/gui/control_editor_plugin.cpp
++++ b/editor/scene/gui/control_editor_plugin.cpp
+@@ -1258,6 +1258,12 @@ ControlEditorToolbar::ControlEditorToolbar() {
+ 	singleton = this;
+ }
+ 
++ControlEditorToolbar::~ControlEditorToolbar() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ ControlEditorToolbar *ControlEditorToolbar::singleton = nullptr;
+ 
+ // Editor plugin.
+diff --git a/editor/scene/gui/control_editor_plugin.h b/editor/scene/gui/control_editor_plugin.h
+index 675b72f..6547f4c 100644
+--- a/editor/scene/gui/control_editor_plugin.h
++++ b/editor/scene/gui/control_editor_plugin.h
+@@ -250,6 +250,7 @@ public:
+ 	static ControlEditorToolbar *get_singleton() { return singleton; }
+ 
+ 	ControlEditorToolbar();
++	~ControlEditorToolbar();
+ };
+ 
+ class ControlOffsetTransformPreview : public Control {
 diff --git a/editor/script/script_editor_plugin.cpp b/editor/script/script_editor_plugin.cpp
 index 0e60dde..dacc55e 100644
 --- a/editor/script/script_editor_plugin.cpp
@@ -1006,6 +1946,54 @@ index a609616..e8898f9 100644
  		ensure_focus();
  #endif
  	}
+diff --git a/editor/settings/editor_build_profile.cpp b/editor/settings/editor_build_profile.cpp
+index 10f549f..8744e81 100644
+--- a/editor/settings/editor_build_profile.cpp
++++ b/editor/settings/editor_build_profile.cpp
+@@ -1460,3 +1460,9 @@ EditorBuildProfileManager::EditorBuildProfileManager() {
+ 
+ 	singleton = this;
+ }
++
++EditorBuildProfileManager::~EditorBuildProfileManager() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/settings/editor_build_profile.h b/editor/settings/editor_build_profile.h
+index fb03af9..84aa5a1 100644
+--- a/editor/settings/editor_build_profile.h
++++ b/editor/settings/editor_build_profile.h
+@@ -216,4 +216,5 @@ public:
+ 
+ 	static EditorBuildProfileManager *get_singleton() { return singleton; }
+ 	EditorBuildProfileManager();
++	~EditorBuildProfileManager();
+ };
+diff --git a/editor/settings/editor_feature_profile.cpp b/editor/settings/editor_feature_profile.cpp
+index f7f2aab..8a11342 100644
+--- a/editor/settings/editor_feature_profile.cpp
++++ b/editor/settings/editor_feature_profile.cpp
+@@ -1092,3 +1092,9 @@ EditorFeatureProfileManager::EditorFeatureProfileManager() {
+ 
+ 	singleton = this;
+ }
++
++EditorFeatureProfileManager::~EditorFeatureProfileManager() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/settings/editor_feature_profile.h b/editor/settings/editor_feature_profile.h
+index cbbe815..d3d63b8 100644
+--- a/editor/settings/editor_feature_profile.h
++++ b/editor/settings/editor_feature_profile.h
+@@ -187,4 +187,5 @@ public:
+ 
+ 	static EditorFeatureProfileManager *get_singleton() { return singleton; }
+ 	EditorFeatureProfileManager();
++	~EditorFeatureProfileManager();
+ };
 diff --git a/editor/settings/editor_settings.cpp b/editor/settings/editor_settings.cpp
 index 8dc98d6..f8ed84d 100644
 --- a/editor/settings/editor_settings.cpp
@@ -1113,6 +2101,248 @@ index 8dc98d6..f8ed84d 100644
  			return;
  		}
  	}
+diff --git a/editor/settings/project_settings_editor.cpp b/editor/settings/project_settings_editor.cpp
+index 1b19d36..be7a7a3 100644
+--- a/editor/settings/project_settings_editor.cpp
++++ b/editor/settings/project_settings_editor.cpp
+@@ -875,3 +875,9 @@ ProjectSettingsEditor::ProjectSettingsEditor(EditorData *p_data) {
+ 
+ 	MovieWriter::set_extensions_hint(); // ensure extensions are properly displayed.
+ }
++
++ProjectSettingsEditor::~ProjectSettingsEditor() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/editor/settings/project_settings_editor.h b/editor/settings/project_settings_editor.h
+index 53a08bf..30e3c3c 100644
+--- a/editor/settings/project_settings_editor.h
++++ b/editor/settings/project_settings_editor.h
+@@ -156,4 +156,5 @@ public:
+ 	void connect_filesystem_dock_signals(FileSystemDock *p_fs_dock);
+ 
+ 	ProjectSettingsEditor(EditorData *p_data);
++	~ProjectSettingsEditor();
+ };
+diff --git a/editor/shader/shader_file_editor_plugin.cpp b/editor/shader/shader_file_editor_plugin.cpp
+index c73a5e4..20f9be5 100644
+--- a/editor/shader/shader_file_editor_plugin.cpp
++++ b/editor/shader/shader_file_editor_plugin.cpp
+@@ -304,6 +304,12 @@ ShaderFileEditor::ShaderFileEditor() {
+ 	main_vb->add_child(error_text);
+ }
+ 
++ShaderFileEditor::~ShaderFileEditor() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ void ShaderFileEditorPlugin::edit(Object *p_object) {
+ 	RDShaderFile *s = Object::cast_to<RDShaderFile>(p_object);
+ 	shader_editor->edit(s);
+diff --git a/editor/shader/shader_file_editor_plugin.h b/editor/shader/shader_file_editor_plugin.h
+index 515393d..8141169 100644
+--- a/editor/shader/shader_file_editor_plugin.h
++++ b/editor/shader/shader_file_editor_plugin.h
+@@ -64,6 +64,7 @@ public:
+ 	void edit(const Ref<RDShaderFile> &p_shader);
+ 
+ 	ShaderFileEditor();
++	~ShaderFileEditor();
+ };
+ 
+ class ShaderFileEditorPlugin : public EditorPlugin {
+diff --git a/editor/version_control/version_control_editor_plugin.cpp b/editor/version_control/version_control_editor_plugin.cpp
+index a96a81f..d079ac7 100644
+--- a/editor/version_control/version_control_editor_plugin.cpp
++++ b/editor/version_control/version_control_editor_plugin.cpp
+@@ -1605,6 +1605,10 @@ VersionControlEditorPlugin::VersionControlEditorPlugin() {
+ }
+ 
+ VersionControlEditorPlugin::~VersionControlEditorPlugin() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	shut_down();
+ 	memdelete(version_commit_dock);
+ 	memdelete(version_control_dock);
+diff --git a/main/performance.cpp b/main/performance.cpp
+index 93d9e66..8bbbf64 100644
+--- a/main/performance.cpp
++++ b/main/performance.cpp
+@@ -611,6 +611,12 @@ Performance::Performance() {
+ 	singleton = this;
+ }
+ 
++Performance::~Performance() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ Performance::MonitorCall::MonitorCall(Performance::MonitorType p_type, const Callable &p_callable, const Vector<Variant> &p_arguments) {
+ 	_type = p_type;
+ 	_callable = p_callable;
+diff --git a/main/performance.h b/main/performance.h
+index 989ec74..443a7db 100644
+--- a/main/performance.h
++++ b/main/performance.h
+@@ -153,6 +153,7 @@ public:
+ 	static Performance *get_singleton() { return singleton; }
+ 
+ 	Performance();
++	~Performance();
+ 
+ private:
+ 	class MonitorCall {
+diff --git a/modules/gdscript/language_server/gdscript_language_protocol.h b/modules/gdscript/language_server/gdscript_language_protocol.h
+index 6ba4fc5..4f68443 100644
+--- a/modules/gdscript/language_server/gdscript_language_protocol.h
++++ b/modules/gdscript/language_server/gdscript_language_protocol.h
+@@ -169,6 +169,9 @@ public:
+ 
+ 	GDScriptLanguageProtocol();
+ 	~GDScriptLanguageProtocol() {
++		if (singleton == this) {
++			singleton = nullptr;
++		}
+ 		clients.clear();
+ 	}
+ };
+diff --git a/modules/gltf/editor/editor_import_blend_runner.cpp b/modules/gltf/editor/editor_import_blend_runner.cpp
+index 250a435..555d7a8 100644
+--- a/modules/gltf/editor/editor_import_blend_runner.cpp
++++ b/modules/gltf/editor/editor_import_blend_runner.cpp
+@@ -400,3 +400,9 @@ EditorImportBlendRunner::EditorImportBlendRunner() {
+ 
+ 	EditorFileSystem::get_singleton()->connect("resources_reimported", callable_mp(this, &EditorImportBlendRunner::_resources_reimported));
+ }
++
++EditorImportBlendRunner::~EditorImportBlendRunner() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/modules/gltf/editor/editor_import_blend_runner.h b/modules/gltf/editor/editor_import_blend_runner.h
+index afc2e68..f481889 100644
+--- a/modules/gltf/editor/editor_import_blend_runner.h
++++ b/modules/gltf/editor/editor_import_blend_runner.h
+@@ -62,4 +62,5 @@ public:
+ 	HTTPClient::Status connect_blender_rpc(const Ref<HTTPClient> &p_client, int p_timeout_usecs);
+ 
+ 	EditorImportBlendRunner();
++	~EditorImportBlendRunner();
+ };
+diff --git a/modules/godot_physics_2d/godot_physics_server_2d.h b/modules/godot_physics_2d/godot_physics_server_2d.h
+index c9130c5..1b82e98 100644
+--- a/modules/godot_physics_2d/godot_physics_server_2d.h
++++ b/modules/godot_physics_2d/godot_physics_server_2d.h
+@@ -300,5 +300,9 @@ public:
+ 	int get_process_info(ProcessInfo p_info) override;
+ 
+ 	GodotPhysicsServer2D(bool p_using_threads = false);
+-	~GodotPhysicsServer2D() {}
++	~GodotPhysicsServer2D() {
++		if (godot_singleton == this) {
++			godot_singleton = nullptr;
++		}
++	}
+ };
+diff --git a/modules/godot_physics_3d/godot_physics_server_3d.h b/modules/godot_physics_3d/godot_physics_server_3d.h
+index 417bfd2..7fc3a7a 100644
+--- a/modules/godot_physics_3d/godot_physics_server_3d.h
++++ b/modules/godot_physics_3d/godot_physics_server_3d.h
+@@ -386,5 +386,9 @@ public:
+ 	int get_process_info(ProcessInfo p_info) override;
+ 
+ 	GodotPhysicsServer3D(bool p_using_threads = false);
+-	~GodotPhysicsServer3D() {}
++	~GodotPhysicsServer3D() {
++		if (godot_singleton == this) {
++			godot_singleton = nullptr;
++		}
++	}
+ };
+diff --git a/modules/navigation_2d/2d/nav_mesh_generator_2d.cpp b/modules/navigation_2d/2d/nav_mesh_generator_2d.cpp
+index 8f1aebf..aca4261 100644
+--- a/modules/navigation_2d/2d/nav_mesh_generator_2d.cpp
++++ b/modules/navigation_2d/2d/nav_mesh_generator_2d.cpp
+@@ -70,6 +70,10 @@ NavMeshGenerator2D::NavMeshGenerator2D() {
+ }
+ 
+ NavMeshGenerator2D::~NavMeshGenerator2D() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	cleanup();
+ }
+ 
+diff --git a/modules/navigation_3d/3d/nav_mesh_generator_3d.cpp b/modules/navigation_3d/3d/nav_mesh_generator_3d.cpp
+index 200794d..32ad74c 100644
+--- a/modules/navigation_3d/3d/nav_mesh_generator_3d.cpp
++++ b/modules/navigation_3d/3d/nav_mesh_generator_3d.cpp
+@@ -83,6 +83,10 @@ NavMeshGenerator3D::NavMeshGenerator3D() {
+ }
+ 
+ NavMeshGenerator3D::~NavMeshGenerator3D() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	cleanup();
+ }
+ 
+diff --git a/modules/navigation_3d/3d/navigation_mesh_generator.cpp b/modules/navigation_3d/3d/navigation_mesh_generator.cpp
+index 21024f4..3abeaf2 100644
+--- a/modules/navigation_3d/3d/navigation_mesh_generator.cpp
++++ b/modules/navigation_3d/3d/navigation_mesh_generator.cpp
+@@ -46,6 +46,10 @@ NavigationMeshGenerator::NavigationMeshGenerator() {
+ }
+ 
+ NavigationMeshGenerator::~NavigationMeshGenerator() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ }
+ 
+ void NavigationMeshGenerator::bake(const Ref<NavigationMesh> &p_navigation_mesh, Node *p_root_node) {
+diff --git a/modules/openxr/extensions/openxr_fb_display_refresh_rate_extension.cpp b/modules/openxr/extensions/openxr_fb_display_refresh_rate_extension.cpp
+index d1d8aa0..d1cfad7 100644
+--- a/modules/openxr/extensions/openxr_fb_display_refresh_rate_extension.cpp
++++ b/modules/openxr/extensions/openxr_fb_display_refresh_rate_extension.cpp
+@@ -43,6 +43,10 @@ OpenXRDisplayRefreshRateExtension::OpenXRDisplayRefreshRateExtension() {
+ }
+ 
+ OpenXRDisplayRefreshRateExtension::~OpenXRDisplayRefreshRateExtension() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	display_refresh_rate_ext = false;
+ }
+ 
+diff --git a/platform/web/api/api.cpp b/platform/web/api/api.cpp
+index deb7847..7b19c11 100644
+--- a/platform/web/api/api.cpp
++++ b/platform/web/api/api.cpp
+@@ -59,7 +59,11 @@ JavaScriptBridge::JavaScriptBridge() {
+ 	singleton = this;
+ }
+ 
+-JavaScriptBridge::~JavaScriptBridge() {}
++JavaScriptBridge::~JavaScriptBridge() {
++	if (singleton == this) {
++		singleton = nullptr;
++	}
++}
+ 
+ void JavaScriptBridge::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("eval", "code", "use_global_execution_context"), &JavaScriptBridge::eval, DEFVAL(false));
 diff --git a/scene/gui/file_dialog.cpp b/scene/gui/file_dialog.cpp
 index eaa1c70..68422ff 100644
 --- a/scene/gui/file_dialog.cpp
@@ -1136,3 +2366,155 @@ index eaa1c70..68422ff 100644
  #endif
  		} break;
  		case ACCESS_RESOURCES: {
+diff --git a/scene/resources/resource_format_text.cpp b/scene/resources/resource_format_text.cpp
+index 53eed0a..92c4e7c 100644
+--- a/scene/resources/resource_format_text.cpp
++++ b/scene/resources/resource_format_text.cpp
+@@ -2246,3 +2246,9 @@ ResourceFormatSaverText *ResourceFormatSaverText::singleton = nullptr;
+ ResourceFormatSaverText::ResourceFormatSaverText() {
+ 	singleton = this;
+ }
++
++ResourceFormatSaverText::~ResourceFormatSaverText() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/scene/resources/resource_format_text.h b/scene/resources/resource_format_text.h
+index 106229a..a796bf4 100644
+--- a/scene/resources/resource_format_text.h
++++ b/scene/resources/resource_format_text.h
+@@ -218,4 +218,5 @@ public:
+ 	virtual void get_recognized_extensions(const Ref<Resource> &p_resource, List<String> *p_extensions) const override;
+ 
+ 	ResourceFormatSaverText();
++	~ResourceFormatSaverText();
+ };
+diff --git a/servers/audio/audio_driver_dummy.h b/servers/audio/audio_driver_dummy.h
+index fe292c8..c622353 100644
+--- a/servers/audio/audio_driver_dummy.h
++++ b/servers/audio/audio_driver_dummy.h
+@@ -81,5 +81,9 @@ public:
+ 	static AudioDriverDummy *get_dummy_singleton() { return singleton; }
+ 
+ 	AudioDriverDummy();
+-	~AudioDriverDummy() {}
++	~AudioDriverDummy() {
++		if (singleton == this) {
++			singleton = nullptr;
++		}
++	}
+ };
+diff --git a/servers/movie_writer/movie_writer.h b/servers/movie_writer/movie_writer.h
+index 870fc6c..26a4555 100644
+--- a/servers/movie_writer/movie_writer.h
++++ b/servers/movie_writer/movie_writer.h
+@@ -84,6 +84,7 @@ public:
+ 	virtual void get_supported_extensions(List<String> *r_extensions) const;
+ 
+ 	static void add_writer(MovieWriter *p_writer);
++	static void clear_writers() { writer_count = 0; } // Before the writers are freed (in-process instances).
+ 	static MovieWriter *find_writer_for_file(const String &p_file);
+ 
+ 	void begin(const Size2i &p_movie_size, uint32_t p_fps, const String &p_base_path);
+diff --git a/servers/navigation_2d/navigation_server_2d.cpp b/servers/navigation_2d/navigation_server_2d.cpp
+index e5d252e..db3defb 100644
+--- a/servers/navigation_2d/navigation_server_2d.cpp
++++ b/servers/navigation_2d/navigation_server_2d.cpp
+@@ -678,4 +678,5 @@ void NavigationServer2DManager::initialize_server_manager() {
+ void NavigationServer2DManager::finalize_server_manager() {
+ 	ERR_FAIL_NULL(singleton);
+ 	memdelete(singleton);
++	singleton = nullptr;
+ }
+diff --git a/servers/navigation_3d/navigation_server_3d.cpp b/servers/navigation_3d/navigation_server_3d.cpp
+index 3b4f8cd..8b118ea 100644
+--- a/servers/navigation_3d/navigation_server_3d.cpp
++++ b/servers/navigation_3d/navigation_server_3d.cpp
+@@ -1161,4 +1161,5 @@ void NavigationServer3DManager::initialize_server_manager() {
+ void NavigationServer3DManager::finalize_server_manager() {
+ 	ERR_FAIL_NULL(singleton);
+ 	memdelete(singleton);
++	singleton = nullptr;
+ }
+diff --git a/servers/register_server_types.cpp b/servers/register_server_types.cpp
+index de40333..99781b9 100644
+--- a/servers/register_server_types.cpp
++++ b/servers/register_server_types.cpp
+@@ -384,6 +384,7 @@ void unregister_server_types() {
+ 	ServersDebugger::deinitialize();
+ 	memdelete(shader_types);
+ 	if constexpr (GD_IS_CLASS_ENABLED(MovieWriterPNGWAV)) {
++		MovieWriter::clear_writers();
+ 		memdelete(writer_pngwav);
+ 	}
+ 
+diff --git a/servers/rendering/renderer_rd/framebuffer_cache_rd.cpp b/servers/rendering/renderer_rd/framebuffer_cache_rd.cpp
+index 4e45779..8501aec 100644
+--- a/servers/rendering/renderer_rd/framebuffer_cache_rd.cpp
++++ b/servers/rendering/renderer_rd/framebuffer_cache_rd.cpp
+@@ -84,6 +84,10 @@ FramebufferCacheRD::FramebufferCacheRD() {
+ }
+ 
+ FramebufferCacheRD::~FramebufferCacheRD() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	if (cache_instances_used > 0) {
+ 		ERR_PRINT("At exit: " + itos(cache_instances_used) + " framebuffer cache instance(s) still in use.");
+ 	}
+diff --git a/servers/rendering/renderer_rd/uniform_set_cache_rd.cpp b/servers/rendering/renderer_rd/uniform_set_cache_rd.cpp
+index ff4602a..19b20a6 100644
+--- a/servers/rendering/renderer_rd/uniform_set_cache_rd.cpp
++++ b/servers/rendering/renderer_rd/uniform_set_cache_rd.cpp
+@@ -79,6 +79,10 @@ UniformSetCacheRD::UniformSetCacheRD() {
+ }
+ 
+ UniformSetCacheRD::~UniformSetCacheRD() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	if (cache_instances_used > 0) {
+ 		ERR_PRINT("At exit: " + itos(cache_instances_used) + " uniform set cache instance(s) still in use.");
+ 	}
+diff --git a/servers/rendering/renderer_scene_cull.cpp b/servers/rendering/renderer_scene_cull.cpp
+index 26a7879..1fc3ff3 100644
+--- a/servers/rendering/renderer_scene_cull.cpp
++++ b/servers/rendering/renderer_scene_cull.cpp
+@@ -4527,6 +4527,10 @@ RendererSceneCull::RendererSceneCull() {
+ }
+ 
+ RendererSceneCull::~RendererSceneCull() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	instance_cull_result.reset();
+ 	instance_shadow_cull_result.reset();
+ 
+diff --git a/servers/rendering/shader_types.cpp b/servers/rendering/shader_types.cpp
+index b733b6b..0a1f379 100644
+--- a/servers/rendering/shader_types.cpp
++++ b/servers/rendering/shader_types.cpp
+@@ -561,3 +561,9 @@ ShaderTypes::ShaderTypes() {
+ 		shader_types.insert(type);
+ 	}
+ }
++
++ShaderTypes::~ShaderTypes() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/servers/rendering/shader_types.h b/servers/rendering/shader_types.h
+index d3fd124..5ec3507 100644
+--- a/servers/rendering/shader_types.h
++++ b/servers/rendering/shader_types.h
+@@ -57,4 +57,5 @@ public:
+ 	const List<String> &get_types_list() const;
+ 
+ 	ShaderTypes();
++	~ShaderTypes();
+ };

@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 11:31:22 +0000
+Date: Sun, 8 Nov 2026 12:25:23 +0000
 Subject: [PATCH 1/4] podot: core: in-process instances (sequential Main
  relaunch in one process)
 
@@ -19,7 +19,7 @@ the platform main loop fully cleans up Main and sets it up again with them.
  core/io/logger.cpp                   |   9 ++
  core/io/logger.h                     |   3 +
  core/object/class_db.cpp             |   3 +
- core/object/object.cpp               |   8 +-
+ core/object/object.cpp               |  13 ++-
  core/object/object.h                 |  35 +++---
  core/os/os.cpp                       |  55 +++++++++
  core/os/os.h                         |  39 ++++++-
@@ -27,7 +27,7 @@ the platform main loop fully cleans up Main and sets it up again with them.
  core/string/string_name.h            |   4 +
  main/main.cpp                        | 168 +++++++++++++++++++++++++++
  platform/linuxbsd/godot_linuxbsd.cpp |  61 ++++++++--
- 12 files changed, 397 insertions(+), 32 deletions(-)
+ 12 files changed, 402 insertions(+), 32 deletions(-)
 
 diff --git a/core/io/ip.cpp b/core/io/ip.cpp
 index ec7c72d..863a78c 100644
@@ -88,7 +88,7 @@ index 855ced0..415a3a2 100644
  
  // Array to use in optional parameters on methods and the DEFVAL_ARRAY macro.
 diff --git a/core/object/object.cpp b/core/object/object.cpp
-index c6f0cf2..62d4b05 100644
+index c6f0cf2..ce34548 100644
 --- a/core/object/object.cpp
 +++ b/core/object/object.cpp
 @@ -1700,14 +1700,14 @@ Variant Object::_get_indexed_bind(const NodePath &p_name) const {
@@ -118,6 +118,18 @@ index c6f0cf2..62d4b05 100644
  }
  
  StringName Object::get_translation_domain() const {
+@@ -2571,6 +2571,11 @@ void ObjectDB::cleanup() {
+ 	if (object_slots) {
+ 		memfree(object_slots);
+ 	}
++	// Allow ObjectDB to be used again if Main is set up again in this process (in-process instances).
++	// Leaked objects of the previous run can't be looked up anymore.
++	object_slots = nullptr;
++	slot_count = 0;
++	slot_max = 0;
+ 
+ 	spin_lock.unlock();
+ }
 diff --git a/core/object/object.h b/core/object/object.h
 index 451680a..c34e53f 100644
 --- a/core/object/object.h
