@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 14:30:37 +0000
+Date: Sun, 8 Nov 2026 15:54:38 +0000
 Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  adaptations
 
@@ -134,9 +134,10 @@ Subject: [PATCH 2/4] podot: editor: in-process game runs and iPadOS editor
  .../renderer_rd/framebuffer_cache_rd.cpp      |   4 +
  .../renderer_rd/uniform_set_cache_rd.cpp      |   4 +
  servers/rendering/renderer_scene_cull.cpp     |   4 +
+ .../rendering/rendering_server_default.cpp    |  17 ++
  servers/rendering/shader_types.cpp            |   6 +
  servers/rendering/shader_types.h              |   1 +
- 117 files changed, 918 insertions(+), 56 deletions(-)
+ 118 files changed, 935 insertions(+), 56 deletions(-)
  create mode 100644 editor/project_manager/project_device_limits.cpp
  create mode 100644 editor/project_manager/project_device_limits.h
 
@@ -2660,6 +2661,34 @@ index 26a7879..1fc3ff3 100644
  	instance_cull_result.reset();
  	instance_shadow_cull_result.reset();
  
+diff --git a/servers/rendering/rendering_server_default.cpp b/servers/rendering/rendering_server_default.cpp
+index 49b80b1..8ff95e0 100644
+--- a/servers/rendering/rendering_server_default.cpp
++++ b/servers/rendering/rendering_server_default.cpp
+@@ -271,6 +271,23 @@ void RenderingServerDefault::_finish() {
+ 	memdelete(RSG::rasterizer);
+ 	memdelete(RSG::scene);
+ 	memdelete(RSG::camera_attributes);
++
++	// The rendering server can be created again in this process (in-process instances): don't leave
++	// dangling globals for the next renderer, which reads some of them while it initializes.
++	RSG::utilities = nullptr;
++	RSG::light_storage = nullptr;
++	RSG::material_storage = nullptr;
++	RSG::mesh_storage = nullptr;
++	RSG::particles_storage = nullptr;
++	RSG::texture_storage = nullptr;
++	RSG::gi = nullptr;
++	RSG::fog = nullptr;
++	RSG::camera_attributes = nullptr;
++	RSG::canvas_render = nullptr;
++	RSG::rasterizer = nullptr;
++	RSG::canvas = nullptr;
++	RSG::viewport = nullptr;
++	RSG::scene = nullptr;
+ }
+ 
+ void RenderingServerDefault::init() {
 diff --git a/servers/rendering/shader_types.cpp b/servers/rendering/shader_types.cpp
 index b733b6b..0a1f379 100644
 --- a/servers/rendering/shader_types.cpp

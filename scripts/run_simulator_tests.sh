@@ -12,6 +12,7 @@ BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.p
 mkdir -p "$RESULTS"
 SUMMARY="$RESULTS/summary.txt"
 : > "$SUMMARY"
+touch "$RESULTS/.start"
 
 result() { echo "$1 $2 ${3:-}" | tee -a "$SUMMARY"; }
 
@@ -192,6 +193,10 @@ else
 fi
 
 xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1
+# Crash reports of the app, if any (symbolicated by the system).
+mkdir -p "$RESULTS/crashes"
+find "$HOME/Library/Logs/DiagnosticReports" -name "Podot*" -newer "$RESULTS/.start" -exec cp {} "$RESULTS/crashes/" \; 2>/dev/null
+ls "$RESULTS/crashes" | sed 's/^/crash report: /'
 echo "---- Summary ----"
 cat "$SUMMARY"
 ! grep -q "^FAIL" "$SUMMARY"

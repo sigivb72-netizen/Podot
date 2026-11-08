@@ -84,10 +84,15 @@ func _wait_frames(n: int) -> void:
 		await get_tree().process_frame
 
 
-func _wait_for_import() -> void:
+func _wait_for_import(expected: PackedStringArray = PackedStringArray()) -> void:
 	var fs := EditorInterface.get_resource_filesystem()
 	fs.scan()
 	await _wait_frames(2)
+	# The scan runs on a thread and may not have started yet: wait for the expected import results.
+	var until := Time.get_ticks_msec() + 600000
+	for path in expected:
+		while not FileAccess.file_exists(path + ".import") and Time.get_ticks_msec() < until:
+			await get_tree().process_frame
 	var deadline := Time.get_ticks_msec() + 600000 # Slow software rendering in CI simulators.
 	while (fs.is_scanning() or fs.is_importing()) and Time.get_ticks_msec() < deadline:
 		await get_tree().process_frame
@@ -163,7 +168,7 @@ func _test_asset_import() -> void:
 		gerr = doc.write_to_filesystem(gstate, ProjectSettings.globalize_path(GEN_DIR.path_join("box.gltf")))
 	root.free()
 
-	await _wait_for_import()
+	await _wait_for_import(PackedStringArray([GEN_DIR.path_join("checker.png"), GEN_DIR.path_join("beep.wav"), GEN_DIR.path_join("box.gltf")]))
 
 	var tex = load(GEN_DIR.path_join("checker.png"))
 	check("import_texture", tex is CompressedTexture2D and tex.get_width() == 64, tex)
