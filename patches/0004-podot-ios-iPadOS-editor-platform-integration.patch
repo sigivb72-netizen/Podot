@@ -1,21 +1,20 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 15:54:38 +0000
-Subject: [PATCH 3/4] podot: ios: iPadOS editor platform integration
+Date: Sun, 8 Nov 2026 17:07:04 +0000
+Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
 
-- Enable editor builds' in-process instances; relaunch Main in-process
+- Enable in-process instances in editor builds; relaunch Main in-process
   when the main loop quits (project manager -> editor -> game -> editor),
   re-creating the rendering layer for the new rendering driver.
-- Floating native Stop control and F8 / Cmd+. to stop a running game;
-  recovery to the editor if iPadOS terminated the app while a game ran.
-- Mouse/trackpad support: buttons, hover, scroll (pan gesture), pinch
-  (magnify), pointer shapes from the cursor shape.
+- Floating Stop control and F8 / Cmd+. to stop a running game; return to
+  the editor if iPadOS terminated the app while a game ran.
+- Editor data/settings in Application Support, per-project user://.
+- Mouse/trackpad: buttons, hover, scroll, pinch, pointer shapes.
 - Apple Pencil as a precise mouse with pressure/tilt in the editor
   (opt-in for projects: input_devices/pointing/ios/pencil_as_mouse).
 - Hardware keyboard: key repeat, connection change notifications.
-- Native file dialogs through UIDocumentPickerViewController with
-  persisted security-scoped bookmarks.
-- Open folders in the Files app (shareddocuments://).
+- Native file dialogs (UIDocumentPickerViewController) with persisted
+  security-scoped bookmarks; Files app integration.
 ---
  .../display_server_apple_embedded.h           |  30 ++-
  .../display_server_apple_embedded.mm          |  18 +-

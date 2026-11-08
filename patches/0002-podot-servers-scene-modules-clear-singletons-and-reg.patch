@@ -1,0 +1,402 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sigivb72-netizen <vergilx63@gmail.com>
+Date: Sun, 8 Nov 2026 17:07:03 +0000
+Subject: [PATCH 2/5] podot: servers, scene, modules: clear singletons and
+ registries on teardown
+
+Needed to set the engine up again in the same process (in-process
+instances): singletons clear their pointer in their destructor, the
+rendering server globals (RSG) are cleared after the renderer is
+finalized, and registries filled at every setup (movie writers, scene
+idle callbacks, navigation server managers) are reset or de-duplicated.
+---
+ drivers/gles3/rasterizer_gles3.cpp              |  4 ++++
+ .../gdscript_language_protocol.h                |  3 +++
+ .../gltf/editor/editor_import_blend_runner.cpp  |  6 ++++++
+ .../gltf/editor/editor_import_blend_runner.h    |  1 +
+ .../godot_physics_2d/godot_physics_server_2d.h  |  6 +++++-
+ .../godot_physics_3d/godot_physics_server_3d.h  |  6 +++++-
+ .../navigation_2d/2d/nav_mesh_generator_2d.cpp  |  4 ++++
+ .../navigation_3d/3d/nav_mesh_generator_3d.cpp  |  4 ++++
+ .../3d/navigation_mesh_generator.cpp            |  4 ++++
+ ...openxr_fb_display_refresh_rate_extension.cpp |  4 ++++
+ platform/web/api/api.cpp                        |  6 +++++-
+ scene/gui/file_dialog.cpp                       |  5 ++++-
+ scene/resources/resource_format_text.cpp        |  6 ++++++
+ scene/resources/resource_format_text.h          |  1 +
+ servers/audio/audio_driver_dummy.h              |  6 +++++-
+ servers/movie_writer/movie_writer.h             |  1 +
+ servers/navigation_2d/navigation_server_2d.cpp  |  1 +
+ servers/navigation_3d/navigation_server_3d.cpp  |  1 +
+ servers/register_server_types.cpp               |  1 +
+ .../renderer_rd/framebuffer_cache_rd.cpp        |  4 ++++
+ .../renderer_rd/uniform_set_cache_rd.cpp        |  4 ++++
+ servers/rendering/renderer_scene_cull.cpp       |  4 ++++
+ servers/rendering/rendering_server_default.cpp  | 17 +++++++++++++++++
+ servers/rendering/shader_types.cpp              |  6 ++++++
+ servers/rendering/shader_types.h                |  1 +
+ 25 files changed, 101 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/gles3/rasterizer_gles3.cpp b/drivers/gles3/rasterizer_gles3.cpp
+index a4208f4..f9bb510 100644
+--- a/drivers/gles3/rasterizer_gles3.cpp
++++ b/drivers/gles3/rasterizer_gles3.cpp
+@@ -392,6 +392,10 @@ RasterizerGLES3::RasterizerGLES3() {
+ }
+ 
+ RasterizerGLES3::~RasterizerGLES3() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ }
+ 
+ void RasterizerGLES3::_blit_render_target_to_screen(DisplayServerEnums::WindowID p_screen, const RenderingServerTypes::BlitToScreen &p_blit, bool p_first) {
+diff --git a/modules/gdscript/language_server/gdscript_language_protocol.h b/modules/gdscript/language_server/gdscript_language_protocol.h
+index 6ba4fc5..4f68443 100644
+--- a/modules/gdscript/language_server/gdscript_language_protocol.h
++++ b/modules/gdscript/language_server/gdscript_language_protocol.h
+@@ -169,6 +169,9 @@ public:
+ 
+ 	GDScriptLanguageProtocol();
+ 	~GDScriptLanguageProtocol() {
++		if (singleton == this) {
++			singleton = nullptr;
++		}
+ 		clients.clear();
+ 	}
+ };
+diff --git a/modules/gltf/editor/editor_import_blend_runner.cpp b/modules/gltf/editor/editor_import_blend_runner.cpp
+index 250a435..555d7a8 100644
+--- a/modules/gltf/editor/editor_import_blend_runner.cpp
++++ b/modules/gltf/editor/editor_import_blend_runner.cpp
+@@ -400,3 +400,9 @@ EditorImportBlendRunner::EditorImportBlendRunner() {
+ 
+ 	EditorFileSystem::get_singleton()->connect("resources_reimported", callable_mp(this, &EditorImportBlendRunner::_resources_reimported));
+ }
++
++EditorImportBlendRunner::~EditorImportBlendRunner() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/modules/gltf/editor/editor_import_blend_runner.h b/modules/gltf/editor/editor_import_blend_runner.h
+index afc2e68..f481889 100644
+--- a/modules/gltf/editor/editor_import_blend_runner.h
++++ b/modules/gltf/editor/editor_import_blend_runner.h
+@@ -62,4 +62,5 @@ public:
+ 	HTTPClient::Status connect_blender_rpc(const Ref<HTTPClient> &p_client, int p_timeout_usecs);
+ 
+ 	EditorImportBlendRunner();
++	~EditorImportBlendRunner();
+ };
+diff --git a/modules/godot_physics_2d/godot_physics_server_2d.h b/modules/godot_physics_2d/godot_physics_server_2d.h
+index c9130c5..1b82e98 100644
+--- a/modules/godot_physics_2d/godot_physics_server_2d.h
++++ b/modules/godot_physics_2d/godot_physics_server_2d.h
+@@ -300,5 +300,9 @@ public:
+ 	int get_process_info(ProcessInfo p_info) override;
+ 
+ 	GodotPhysicsServer2D(bool p_using_threads = false);
+-	~GodotPhysicsServer2D() {}
++	~GodotPhysicsServer2D() {
++		if (godot_singleton == this) {
++			godot_singleton = nullptr;
++		}
++	}
+ };
+diff --git a/modules/godot_physics_3d/godot_physics_server_3d.h b/modules/godot_physics_3d/godot_physics_server_3d.h
+index 417bfd2..7fc3a7a 100644
+--- a/modules/godot_physics_3d/godot_physics_server_3d.h
++++ b/modules/godot_physics_3d/godot_physics_server_3d.h
+@@ -386,5 +386,9 @@ public:
+ 	int get_process_info(ProcessInfo p_info) override;
+ 
+ 	GodotPhysicsServer3D(bool p_using_threads = false);
+-	~GodotPhysicsServer3D() {}
++	~GodotPhysicsServer3D() {
++		if (godot_singleton == this) {
++			godot_singleton = nullptr;
++		}
++	}
+ };
+diff --git a/modules/navigation_2d/2d/nav_mesh_generator_2d.cpp b/modules/navigation_2d/2d/nav_mesh_generator_2d.cpp
+index 8f1aebf..aca4261 100644
+--- a/modules/navigation_2d/2d/nav_mesh_generator_2d.cpp
++++ b/modules/navigation_2d/2d/nav_mesh_generator_2d.cpp
+@@ -70,6 +70,10 @@ NavMeshGenerator2D::NavMeshGenerator2D() {
+ }
+ 
+ NavMeshGenerator2D::~NavMeshGenerator2D() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	cleanup();
+ }
+ 
+diff --git a/modules/navigation_3d/3d/nav_mesh_generator_3d.cpp b/modules/navigation_3d/3d/nav_mesh_generator_3d.cpp
+index 200794d..32ad74c 100644
+--- a/modules/navigation_3d/3d/nav_mesh_generator_3d.cpp
++++ b/modules/navigation_3d/3d/nav_mesh_generator_3d.cpp
+@@ -83,6 +83,10 @@ NavMeshGenerator3D::NavMeshGenerator3D() {
+ }
+ 
+ NavMeshGenerator3D::~NavMeshGenerator3D() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	cleanup();
+ }
+ 
+diff --git a/modules/navigation_3d/3d/navigation_mesh_generator.cpp b/modules/navigation_3d/3d/navigation_mesh_generator.cpp
+index 21024f4..3abeaf2 100644
+--- a/modules/navigation_3d/3d/navigation_mesh_generator.cpp
++++ b/modules/navigation_3d/3d/navigation_mesh_generator.cpp
+@@ -46,6 +46,10 @@ NavigationMeshGenerator::NavigationMeshGenerator() {
+ }
+ 
+ NavigationMeshGenerator::~NavigationMeshGenerator() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ }
+ 
+ void NavigationMeshGenerator::bake(const Ref<NavigationMesh> &p_navigation_mesh, Node *p_root_node) {
+diff --git a/modules/openxr/extensions/openxr_fb_display_refresh_rate_extension.cpp b/modules/openxr/extensions/openxr_fb_display_refresh_rate_extension.cpp
+index d1d8aa0..d1cfad7 100644
+--- a/modules/openxr/extensions/openxr_fb_display_refresh_rate_extension.cpp
++++ b/modules/openxr/extensions/openxr_fb_display_refresh_rate_extension.cpp
+@@ -43,6 +43,10 @@ OpenXRDisplayRefreshRateExtension::OpenXRDisplayRefreshRateExtension() {
+ }
+ 
+ OpenXRDisplayRefreshRateExtension::~OpenXRDisplayRefreshRateExtension() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	display_refresh_rate_ext = false;
+ }
+ 
+diff --git a/platform/web/api/api.cpp b/platform/web/api/api.cpp
+index deb7847..7b19c11 100644
+--- a/platform/web/api/api.cpp
++++ b/platform/web/api/api.cpp
+@@ -59,7 +59,11 @@ JavaScriptBridge::JavaScriptBridge() {
+ 	singleton = this;
+ }
+ 
+-JavaScriptBridge::~JavaScriptBridge() {}
++JavaScriptBridge::~JavaScriptBridge() {
++	if (singleton == this) {
++		singleton = nullptr;
++	}
++}
+ 
+ void JavaScriptBridge::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("eval", "code", "use_global_execution_context"), &JavaScriptBridge::eval, DEFVAL(false));
+diff --git a/scene/gui/file_dialog.cpp b/scene/gui/file_dialog.cpp
+index eaa1c70..68422ff 100644
+--- a/scene/gui/file_dialog.cpp
++++ b/scene/gui/file_dialog.cpp
+@@ -807,7 +807,7 @@ void FileDialog::_popup_menu(const Vector2 &p_pos, int p_for_item) {
+ 		item_menu->set_item_shortcut(-1, action_shortcuts[ITEM_MENU_REFRESH]);
+ 	}
+ 
+-#if !defined(ANDROID_ENABLED) && !defined(WEB_ENABLED)
++#if !defined(ANDROID_ENABLED) && !defined(APPLE_EMBEDDED_ENABLED) && !defined(WEB_ENABLED)
+ 	// Opening the system file manager is not supported on the Android and web editors.
+ 	item_menu->add_separator();
+ 
+@@ -1546,6 +1546,9 @@ void FileDialog::set_access(Access p_access) {
+ 			dir_access = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+ #ifdef ANDROID_ENABLED
+ 			set_current_dir(OS::get_singleton()->get_system_dir(OS::SYSTEM_DIR_DESKTOP));
++#elif defined(APPLE_EMBEDDED_ENABLED)
++			// The app's Documents folder is the part of the sandbox visible in the Files app.
++			set_current_dir(OS::get_singleton()->get_system_dir(OS::SYSTEM_DIR_DOCUMENTS));
+ #endif
+ 		} break;
+ 		case ACCESS_RESOURCES: {
+diff --git a/scene/resources/resource_format_text.cpp b/scene/resources/resource_format_text.cpp
+index 53eed0a..92c4e7c 100644
+--- a/scene/resources/resource_format_text.cpp
++++ b/scene/resources/resource_format_text.cpp
+@@ -2246,3 +2246,9 @@ ResourceFormatSaverText *ResourceFormatSaverText::singleton = nullptr;
+ ResourceFormatSaverText::ResourceFormatSaverText() {
+ 	singleton = this;
+ }
++
++ResourceFormatSaverText::~ResourceFormatSaverText() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/scene/resources/resource_format_text.h b/scene/resources/resource_format_text.h
+index 106229a..a796bf4 100644
+--- a/scene/resources/resource_format_text.h
++++ b/scene/resources/resource_format_text.h
+@@ -218,4 +218,5 @@ public:
+ 	virtual void get_recognized_extensions(const Ref<Resource> &p_resource, List<String> *p_extensions) const override;
+ 
+ 	ResourceFormatSaverText();
++	~ResourceFormatSaverText();
+ };
+diff --git a/servers/audio/audio_driver_dummy.h b/servers/audio/audio_driver_dummy.h
+index fe292c8..c622353 100644
+--- a/servers/audio/audio_driver_dummy.h
++++ b/servers/audio/audio_driver_dummy.h
+@@ -81,5 +81,9 @@ public:
+ 	static AudioDriverDummy *get_dummy_singleton() { return singleton; }
+ 
+ 	AudioDriverDummy();
+-	~AudioDriverDummy() {}
++	~AudioDriverDummy() {
++		if (singleton == this) {
++			singleton = nullptr;
++		}
++	}
+ };
+diff --git a/servers/movie_writer/movie_writer.h b/servers/movie_writer/movie_writer.h
+index 870fc6c..26a4555 100644
+--- a/servers/movie_writer/movie_writer.h
++++ b/servers/movie_writer/movie_writer.h
+@@ -84,6 +84,7 @@ public:
+ 	virtual void get_supported_extensions(List<String> *r_extensions) const;
+ 
+ 	static void add_writer(MovieWriter *p_writer);
++	static void clear_writers() { writer_count = 0; } // Before the writers are freed (in-process instances).
+ 	static MovieWriter *find_writer_for_file(const String &p_file);
+ 
+ 	void begin(const Size2i &p_movie_size, uint32_t p_fps, const String &p_base_path);
+diff --git a/servers/navigation_2d/navigation_server_2d.cpp b/servers/navigation_2d/navigation_server_2d.cpp
+index e5d252e..db3defb 100644
+--- a/servers/navigation_2d/navigation_server_2d.cpp
++++ b/servers/navigation_2d/navigation_server_2d.cpp
+@@ -678,4 +678,5 @@ void NavigationServer2DManager::initialize_server_manager() {
+ void NavigationServer2DManager::finalize_server_manager() {
+ 	ERR_FAIL_NULL(singleton);
+ 	memdelete(singleton);
++	singleton = nullptr;
+ }
+diff --git a/servers/navigation_3d/navigation_server_3d.cpp b/servers/navigation_3d/navigation_server_3d.cpp
+index 3b4f8cd..8b118ea 100644
+--- a/servers/navigation_3d/navigation_server_3d.cpp
++++ b/servers/navigation_3d/navigation_server_3d.cpp
+@@ -1161,4 +1161,5 @@ void NavigationServer3DManager::initialize_server_manager() {
+ void NavigationServer3DManager::finalize_server_manager() {
+ 	ERR_FAIL_NULL(singleton);
+ 	memdelete(singleton);
++	singleton = nullptr;
+ }
+diff --git a/servers/register_server_types.cpp b/servers/register_server_types.cpp
+index de40333..99781b9 100644
+--- a/servers/register_server_types.cpp
++++ b/servers/register_server_types.cpp
+@@ -384,6 +384,7 @@ void unregister_server_types() {
+ 	ServersDebugger::deinitialize();
+ 	memdelete(shader_types);
+ 	if constexpr (GD_IS_CLASS_ENABLED(MovieWriterPNGWAV)) {
++		MovieWriter::clear_writers();
+ 		memdelete(writer_pngwav);
+ 	}
+ 
+diff --git a/servers/rendering/renderer_rd/framebuffer_cache_rd.cpp b/servers/rendering/renderer_rd/framebuffer_cache_rd.cpp
+index 4e45779..8501aec 100644
+--- a/servers/rendering/renderer_rd/framebuffer_cache_rd.cpp
++++ b/servers/rendering/renderer_rd/framebuffer_cache_rd.cpp
+@@ -84,6 +84,10 @@ FramebufferCacheRD::FramebufferCacheRD() {
+ }
+ 
+ FramebufferCacheRD::~FramebufferCacheRD() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	if (cache_instances_used > 0) {
+ 		ERR_PRINT("At exit: " + itos(cache_instances_used) + " framebuffer cache instance(s) still in use.");
+ 	}
+diff --git a/servers/rendering/renderer_rd/uniform_set_cache_rd.cpp b/servers/rendering/renderer_rd/uniform_set_cache_rd.cpp
+index ff4602a..19b20a6 100644
+--- a/servers/rendering/renderer_rd/uniform_set_cache_rd.cpp
++++ b/servers/rendering/renderer_rd/uniform_set_cache_rd.cpp
+@@ -79,6 +79,10 @@ UniformSetCacheRD::UniformSetCacheRD() {
+ }
+ 
+ UniformSetCacheRD::~UniformSetCacheRD() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	if (cache_instances_used > 0) {
+ 		ERR_PRINT("At exit: " + itos(cache_instances_used) + " uniform set cache instance(s) still in use.");
+ 	}
+diff --git a/servers/rendering/renderer_scene_cull.cpp b/servers/rendering/renderer_scene_cull.cpp
+index 26a7879..1fc3ff3 100644
+--- a/servers/rendering/renderer_scene_cull.cpp
++++ b/servers/rendering/renderer_scene_cull.cpp
+@@ -4527,6 +4527,10 @@ RendererSceneCull::RendererSceneCull() {
+ }
+ 
+ RendererSceneCull::~RendererSceneCull() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	instance_cull_result.reset();
+ 	instance_shadow_cull_result.reset();
+ 
+diff --git a/servers/rendering/rendering_server_default.cpp b/servers/rendering/rendering_server_default.cpp
+index 49b80b1..8ff95e0 100644
+--- a/servers/rendering/rendering_server_default.cpp
++++ b/servers/rendering/rendering_server_default.cpp
+@@ -271,6 +271,23 @@ void RenderingServerDefault::_finish() {
+ 	memdelete(RSG::rasterizer);
+ 	memdelete(RSG::scene);
+ 	memdelete(RSG::camera_attributes);
++
++	// The rendering server can be created again in this process (in-process instances): don't leave
++	// dangling globals for the next renderer, which reads some of them while it initializes.
++	RSG::utilities = nullptr;
++	RSG::light_storage = nullptr;
++	RSG::material_storage = nullptr;
++	RSG::mesh_storage = nullptr;
++	RSG::particles_storage = nullptr;
++	RSG::texture_storage = nullptr;
++	RSG::gi = nullptr;
++	RSG::fog = nullptr;
++	RSG::camera_attributes = nullptr;
++	RSG::canvas_render = nullptr;
++	RSG::rasterizer = nullptr;
++	RSG::canvas = nullptr;
++	RSG::viewport = nullptr;
++	RSG::scene = nullptr;
+ }
+ 
+ void RenderingServerDefault::init() {
+diff --git a/servers/rendering/shader_types.cpp b/servers/rendering/shader_types.cpp
+index b733b6b..0a1f379 100644
+--- a/servers/rendering/shader_types.cpp
++++ b/servers/rendering/shader_types.cpp
+@@ -561,3 +561,9 @@ ShaderTypes::ShaderTypes() {
+ 		shader_types.insert(type);
+ 	}
+ }
++
++ShaderTypes::~ShaderTypes() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/servers/rendering/shader_types.h b/servers/rendering/shader_types.h
+index d3fd124..5ec3507 100644
+--- a/servers/rendering/shader_types.h
++++ b/servers/rendering/shader_types.h
+@@ -57,4 +57,5 @@ public:
+ 	const List<String> &get_types_list() const;
+ 
+ 	ShaderTypes();
++	~ShaderTypes();
+ };

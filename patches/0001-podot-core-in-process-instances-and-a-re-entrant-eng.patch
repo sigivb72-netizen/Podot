@@ -1,34 +1,104 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 15:54:37 +0000
-Subject: [PATCH 1/4] podot: core: in-process instances (sequential Main
- relaunch in one process)
+Date: Sun, 8 Nov 2026 17:07:03 +0000
+Subject: [PATCH 1/5] podot: core: in-process instances and a re-entrant engine
+ core
 
 Platforms that cannot spawn processes (the iPadOS editor) can enable
-in-process instances: OS::create_instance() then queues the arguments, and
-the platform main loop fully cleans up Main and sets it up again with them.
+in-process instances: OS::create_instance() queues the arguments, and the
+platform main loop cleans up Main and sets it up again with them. A small
+OS key/value store survives these relaunches.
 
-- OS: instance queue, session data surviving relaunches, logger scope.
-- StringName: optionally keep the entries of static StringNames (SNAME)
-  alive across cleanup, so they don't dangle after a relaunch.
-- Main: reset file-scope state before a repeated setup.
-- CompositeLogger: allow dropping loggers added by Main.
-- linuxbsd: honor GODOT_IN_PROCESS_INSTANCES=1 to test the flow on desktop.
+Making Main::setup() work again after Main::cleanup():
+- StringName: keep the entries referenced by static StringNames (SNAME).
+- GDCLASS/Object: register classes once per ClassDB generation (a static
+  "initialized" flag and the static GDType pointer survived cleanup).
+- ObjectDB: reset the slot table after freeing it.
+- Main: reset file-scope state, benchmark marks and iteration state.
+- CompositeLogger: drop the loggers added by Main on cleanup.
+- Core singletons clear their pointer when destroyed (ResourceUID,
+  TranslationServer, ZipArchive, IP, MIDIDriver, resource formats, ...).
+
+linuxbsd honors GODOT_IN_PROCESS_INSTANCES=1, to test the flow on desktop.
 ---
+ core/input/input_map.cpp             |  12 +-
+ core/io/file_access_zip.cpp          |   3 +
  core/io/ip.cpp                       |   1 +
  core/io/logger.cpp                   |   9 ++
  core/io/logger.h                     |   3 +
+ core/io/resource_format_binary.cpp   |   6 +
+ core/io/resource_format_binary.h     |   1 +
+ core/io/resource_importer.cpp        |   6 +
+ core/io/resource_importer.h          |   1 +
+ core/io/resource_uid.cpp             |   4 +
  core/object/class_db.cpp             |   3 +
  core/object/object.cpp               |  13 ++-
  core/object/object.h                 |  35 +++---
+ core/os/keyboard.cpp                 |   2 +-
+ core/os/midi_driver.h                |   6 +-
  core/os/os.cpp                       |  55 +++++++++
  core/os/os.h                         |  39 ++++++-
  core/string/string_name.cpp          |  43 +++++++
  core/string/string_name.h            |   4 +
+ core/string/translation_server.cpp   |   6 +
+ core/string/translation_server.h     |   1 +
  main/main.cpp                        | 168 +++++++++++++++++++++++++++
+ main/performance.cpp                 |   6 +
+ main/performance.h                   |   1 +
  platform/linuxbsd/godot_linuxbsd.cpp |  61 ++++++++--
- 12 files changed, 402 insertions(+), 32 deletions(-)
+ 25 files changed, 453 insertions(+), 36 deletions(-)
 
+diff --git a/core/input/input_map.cpp b/core/input/input_map.cpp
+index d18a781..201483e 100644
+--- a/core/input/input_map.cpp
++++ b/core/input/input_map.cpp
+@@ -883,6 +883,14 @@ const HashMap<String, List<Ref<InputEvent>>> &InputMap::get_builtins() {
+ 	return default_builtin_cache;
+ }
+ 
++// Apple devices with a hardware keyboard (iPadOS) use the macOS key conventions (Command/Option).
++static bool _is_override_supported(const String &p_feature) {
++	if (OS::get_singleton()->has_feature(p_feature)) {
++		return true;
++	}
++	return p_feature == "macos" && OS::prefer_meta_over_ctrl();
++}
++
+ const HashMap<String, List<Ref<InputEvent>>> &InputMap::get_builtins_with_feature_overrides_applied() {
+ 	if (default_builtin_with_overrides_cache.size() > 0) {
+ 		return default_builtin_with_overrides_cache;
+@@ -900,7 +908,7 @@ const HashMap<String, List<Ref<InputEvent>>> &InputMap::get_builtins_with_featur
+ 		const String &name = fullname.get_slicec('.', 0);
+ 		String override_for = fullname.get_slice_count(".") > 1 ? fullname.get_slicec('.', 1) : String();
+ 
+-		if (!override_for.is_empty() && OS::get_singleton()->has_feature(override_for)) {
++		if (!override_for.is_empty() && _is_override_supported(override_for)) {
+ 			builtins_with_overrides[name].push_back(override_for);
+ 		}
+ 	}
+@@ -916,7 +924,7 @@ const HashMap<String, List<Ref<InputEvent>>> &InputMap::get_builtins_with_featur
+ 			continue;
+ 		}
+ 
+-		if (!override_for.is_empty() && !OS::get_singleton()->has_feature(override_for)) {
++		if (!override_for.is_empty() && !_is_override_supported(override_for)) {
+ 			// OS does not support this override - skip.
+ 			continue;
+ 		}
+diff --git a/core/io/file_access_zip.cpp b/core/io/file_access_zip.cpp
+index 2bb9db7..39fb437 100644
+--- a/core/io/file_access_zip.cpp
++++ b/core/io/file_access_zip.cpp
+@@ -227,6 +227,9 @@ ZipArchive::ZipArchive() {
+ 
+ ZipArchive::~ZipArchive() {
+ 	packages.clear();
++	if (instance == this) {
++		instance = nullptr; // Main can be set up again in this process (in-process instances).
++	}
+ }
+ 
+ Error FileAccessZip::open_internal(const String &p_path, int p_mode_flags) {
 diff --git a/core/io/ip.cpp b/core/io/ip.cpp
 index ec7c72d..863a78c 100644
 --- a/core/io/ip.cpp
@@ -73,6 +143,74 @@ index 6fa0cc2..d63b220 100644
  
  	virtual ~CompositeLogger();
  };
+diff --git a/core/io/resource_format_binary.cpp b/core/io/resource_format_binary.cpp
+index 2b251da..64fd436 100644
+--- a/core/io/resource_format_binary.cpp
++++ b/core/io/resource_format_binary.cpp
+@@ -2484,3 +2484,9 @@ void ResourceFormatSaverBinary::get_recognized_extensions(const Ref<Resource> &p
+ ResourceFormatSaverBinary::ResourceFormatSaverBinary() {
+ 	singleton = this;
+ }
++
++ResourceFormatSaverBinary::~ResourceFormatSaverBinary() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/core/io/resource_format_binary.h b/core/io/resource_format_binary.h
+index 35e66e7..22c7e68 100644
+--- a/core/io/resource_format_binary.h
++++ b/core/io/resource_format_binary.h
+@@ -190,4 +190,5 @@ public:
+ 	virtual void get_recognized_extensions(const Ref<Resource> &p_resource, List<String> *p_extensions) const override;
+ 
+ 	ResourceFormatSaverBinary();
++	~ResourceFormatSaverBinary();
+ };
+diff --git a/core/io/resource_importer.cpp b/core/io/resource_importer.cpp
+index 566fbea..4a74a94 100644
+--- a/core/io/resource_importer.cpp
++++ b/core/io/resource_importer.cpp
+@@ -578,6 +578,12 @@ ResourceFormatImporter::ResourceFormatImporter() {
+ 	singleton = this;
+ }
+ 
++ResourceFormatImporter::~ResourceFormatImporter() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ //////////////
+ 
+ void ResourceImporter::get_build_dependencies(const String &p_path, HashSet<String> *r_dependencies) {
+diff --git a/core/io/resource_importer.h b/core/io/resource_importer.h
+index f32cac6..2daed82 100644
+--- a/core/io/resource_importer.h
++++ b/core/io/resource_importer.h
+@@ -105,6 +105,7 @@ public:
+ 	Error get_resource_import_info(const String &p_path, StringName &r_type, ResourceUID::ID &r_uid, String &r_import_group_file) const;
+ 
+ 	ResourceFormatImporter();
++	~ResourceFormatImporter();
+ };
+ 
+ class ResourceImporter : public RefCounted {
+diff --git a/core/io/resource_uid.cpp b/core/io/resource_uid.cpp
+index 5e9fff6..d1a7982 100644
+--- a/core/io/resource_uid.cpp
++++ b/core/io/resource_uid.cpp
+@@ -438,6 +438,10 @@ ResourceUID::ResourceUID() {
+ 	singleton = this;
+ }
+ ResourceUID::~ResourceUID() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++
+ 	if (crypto != nullptr) {
+ 		memdelete((CryptoCore::RandomGenerator *)crypto);
+ 	}
 diff --git a/core/object/class_db.cpp b/core/object/class_db.cpp
 index 855ced0..415a3a2 100644
 --- a/core/object/class_db.cpp
@@ -226,6 +364,36 @@ index 451680a..c34e53f 100644
  		return *gdtype;
  	}
  
+diff --git a/core/os/keyboard.cpp b/core/os/keyboard.cpp
+index 87bb296..2c514c1 100644
+--- a/core/os/keyboard.cpp
++++ b/core/os/keyboard.cpp
+@@ -62,7 +62,7 @@ static const _KeyCodeText _keycodes[] = {
+ 	{Key::PAGEDOWN              ,"PageDown"},
+ 	{Key::SHIFT                 ,"Shift"},
+ 	{Key::CTRL                  ,"Ctrl"},
+-#if defined(MACOS_ENABLED)
++#if defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+ 	{Key::META                  ,"Command"},
+ 	{Key::CMD_OR_CTRL           ,"Command"},
+ 	{Key::ALT                   ,"Option"},
+diff --git a/core/os/midi_driver.h b/core/os/midi_driver.h
+index 77ecccc..729a4e1 100644
+--- a/core/os/midi_driver.h
++++ b/core/os/midi_driver.h
+@@ -103,7 +103,11 @@ public:
+ 	static MIDIDriver *get_singleton();
+ 
+ 	MIDIDriver();
+-	virtual ~MIDIDriver() = default;
++	virtual ~MIDIDriver() {
++		if (singleton == this) {
++			singleton = nullptr;
++		}
++	}
+ 
+ 	virtual Error open() = 0;
+ 	virtual void close() = 0;
 diff --git a/core/os/os.cpp b/core/os/os.cpp
 index ffc0dff..f8169b4 100644
 --- a/core/os/os.cpp
@@ -432,6 +600,30 @@ index 0619af8..e0a6f10 100644
  #ifdef DEBUG_ENABLED
  	struct DebugSortReferences {
  		bool operator()(const _Data *p_left, const _Data *p_right) const {
+diff --git a/core/string/translation_server.cpp b/core/string/translation_server.cpp
+index 069e53f..7f84553 100644
+--- a/core/string/translation_server.cpp
++++ b/core/string/translation_server.cpp
+@@ -785,3 +785,9 @@ TranslationServer::TranslationServer() {
+ 
+ 	init_locale_info();
+ }
++
++TranslationServer::~TranslationServer() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
+diff --git a/core/string/translation_server.h b/core/string/translation_server.h
+index aa64c81..e7f5676 100644
+--- a/core/string/translation_server.h
++++ b/core/string/translation_server.h
+@@ -174,4 +174,5 @@ public:
+ #endif // TOOLS_ENABLED
+ 
+ 	TranslationServer();
++	~TranslationServer();
+ };
 diff --git a/main/main.cpp b/main/main.cpp
 index 2fc62fd..f23c48d 100644
 --- a/main/main.cpp
@@ -667,6 +859,35 @@ index 2fc62fd..f23c48d 100644
 +
  	Thread::release_main_thread();
  }
+diff --git a/main/performance.cpp b/main/performance.cpp
+index 93d9e66..8bbbf64 100644
+--- a/main/performance.cpp
++++ b/main/performance.cpp
+@@ -611,6 +611,12 @@ Performance::Performance() {
+ 	singleton = this;
+ }
+ 
++Performance::~Performance() {
++	if (singleton == this) {
++		singleton = nullptr; // Main can be set up again in this process (in-process instances).
++	}
++}
++
+ Performance::MonitorCall::MonitorCall(Performance::MonitorType p_type, const Callable &p_callable, const Vector<Variant> &p_arguments) {
+ 	_type = p_type;
+ 	_callable = p_callable;
+diff --git a/main/performance.h b/main/performance.h
+index 989ec74..443a7db 100644
+--- a/main/performance.h
++++ b/main/performance.h
+@@ -153,6 +153,7 @@ public:
+ 	static Performance *get_singleton() { return singleton; }
+ 
+ 	Performance();
++	~Performance();
+ 
+ private:
+ 	class MonitorCall {
 diff --git a/platform/linuxbsd/godot_linuxbsd.cpp b/platform/linuxbsd/godot_linuxbsd.cpp
 index d96c940..47a7ffe 100644
 --- a/platform/linuxbsd/godot_linuxbsd.cpp

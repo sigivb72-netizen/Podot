@@ -3,14 +3,15 @@
 Podot runs the unmodified Godot editor architecture on iPadOS. Everything visible in the app — the
 project manager, docks, inspector, viewports, script editor — is the regular Godot editor, compiled
 for iOS (`platform=ios target=editor`). The patches only touch what iPadOS forces to be different.
-They are in `patches/` (against Godot `4.7.2-stable`, see `UPSTREAM`), grouped in four commits:
+They are in `patches/` (against Godot `4.7.2-stable`, see `UPSTREAM`), grouped in five commits:
 
-| Patch | Area | Files |
-|---|---|---|
-| 0001 | core: in-process instances | `core/os/os.*`, `core/string/string_name.*`, `core/io/logger.*`, `main/main.cpp`, `platform/linuxbsd/godot_linuxbsd.cpp` |
-| 0002 | editor: in-process game runs, mobile adaptations, device limits, low memory | `editor/**`, `core/input/input_map.cpp`, `core/os/keyboard.cpp`, `scene/gui/file_dialog.cpp` |
-| 0003 | iOS platform integration | `drivers/apple_embedded/**`, `platform/ios/**` |
-| 0004 | unit tests | `tests/podot/test_podot_ipados.cpp` |
+| Patch | Area |
+|---|---|
+| 0001 | core: in-process instances, re-entrant engine core (`core/`, `main/`, `platform/linuxbsd/`) |
+| 0002 | servers, scene, modules: singletons and registries cleared on teardown |
+| 0003 | editor: in-process game runs, mobile adaptations, device limits, low memory |
+| 0004 | iOS platform integration (`drivers/apple_embedded/`, `platform/ios/`) |
+| 0005 | unit tests (`tests/podot/`) |
 
 ## 1. Running the editor, the project manager and the game in one process
 
@@ -39,6 +40,25 @@ Making `Main` re-entrant needed three core changes:
   iteration statistics and the timer sync.
 * Loggers added by `Main::setup()` (e.g. `--log-file`) are removed again on cleanup
   (`CompositeLogger::truncate_loggers()`), otherwise they would accumulate.
+* Class registration: every `GDCLASS` used a function-static `initialized` flag and a static
+  `GDType` pointer, so after `ClassDB::cleanup()` the classes were never registered again (and the
+  freed `GDType`s were dereferenced). Registration now tracks a ClassDB generation counter that
+  `ClassDB::cleanup()` increments.
+* `ObjectDB::cleanup()` freed its slot table but kept the pointer and counters.
+* About 60 singletons (core, servers, scene, editor, modules; found with a scan for constructors
+  that set `singleton = this` and with AddressSanitizer) kept a dangling pointer after their
+  destructor; they now clear it (`if (singleton == this) singleton = nullptr;`). The rendering
+  server's globals (`RSG::*`) are cleared after the renderer is finalized.
+* Static registries filled on every setup (movie writers, idle callbacks, editor plugin
+  factories, editor init callbacks) are cleared or de-duplicated.
+* The editor changes process-wide state for editor mode (resource load/save callbacks,
+  placeholder instancing, missing-resource handling, error notifiers, file dialog defaults, ...).
+  `~EditorNode` restores the defaults, so a game started next in the same process behaves exactly
+  like a game started on its own.
+
+All of this is verified by running the editor → game → editor → restart cycle under
+AddressSanitizer, headless and with the real OpenGL ES 3 renderer and X11 display server
+(`scripts/run_linux_tests.sh`).
 
 ### Running the game ("Play")
 
