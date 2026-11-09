@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 17:07:03 +0000
+Date: Mon, 9 Nov 2026 12:40:13 +0000
 Subject: [PATCH 1/5] podot: core: in-process instances and a re-entrant engine
  core
 
@@ -20,34 +20,87 @@ Making Main::setup() work again after Main::cleanup():
   TranslationServer, ZipArchive, IP, MIDIDriver, resource formats, ...).
 
 linuxbsd honors GODOT_IN_PROCESS_INSTANCES=1, to test the flow on desktop.
----
- core/input/input_map.cpp             |  12 +-
- core/io/file_access_zip.cpp          |   3 +
- core/io/ip.cpp                       |   1 +
- core/io/logger.cpp                   |   9 ++
- core/io/logger.h                     |   3 +
- core/io/resource_format_binary.cpp   |   6 +
- core/io/resource_format_binary.h     |   1 +
- core/io/resource_importer.cpp        |   6 +
- core/io/resource_importer.h          |   1 +
- core/io/resource_uid.cpp             |   4 +
- core/object/class_db.cpp             |   3 +
- core/object/object.cpp               |  13 ++-
- core/object/object.h                 |  35 +++---
- core/os/keyboard.cpp                 |   2 +-
- core/os/midi_driver.h                |   6 +-
- core/os/os.cpp                       |  55 +++++++++
- core/os/os.h                         |  39 ++++++-
- core/string/string_name.cpp          |  43 +++++++
- core/string/string_name.h            |   4 +
- core/string/translation_server.cpp   |   6 +
- core/string/translation_server.h     |   1 +
- main/main.cpp                        | 168 +++++++++++++++++++++++++++
- main/performance.cpp                 |   6 +
- main/performance.h                   |   1 +
- platform/linuxbsd/godot_linuxbsd.cpp |  61 ++++++++--
- 25 files changed, 453 insertions(+), 36 deletions(-)
 
+Touch canvas gestures: TouchGestureRecognizer turns raw touches into
+drawing-app style navigation (two-finger drag -> InputEventPanGesture,
+pinch -> InputEventMagnifyGesture, two/three-finger taps -> undo/redo
+callback), holding the first touch back briefly so that a gesture never
+also produces single-finger input. New project settings
+input_devices/pointing/ios/enable_pan_and_scale_gestures and
+input_devices/pointing/ios/pencil_as_mouse.
+
+Fix: Input dispatched every gesture event twice (pinch and trackpad pan
+were applied twice on all platforms).
+---
+ core/config/project_settings.cpp        |   2 +
+ core/input/input.cpp                    |  11 +-
+ core/input/input_map.cpp                |  12 +-
+ core/input/touch_gesture_recognizer.cpp | 276 ++++++++++++++++++++++++
+ core/input/touch_gesture_recognizer.h   | 115 ++++++++++
+ core/io/file_access_zip.cpp             |   3 +
+ core/io/ip.cpp                          |   1 +
+ core/io/logger.cpp                      |   9 +
+ core/io/logger.h                        |   3 +
+ core/io/resource_format_binary.cpp      |   6 +
+ core/io/resource_format_binary.h        |   1 +
+ core/io/resource_importer.cpp           |   6 +
+ core/io/resource_importer.h             |   1 +
+ core/io/resource_uid.cpp                |   4 +
+ core/object/class_db.cpp                |   3 +
+ core/object/object.cpp                  |  13 +-
+ core/object/object.h                    |  35 +--
+ core/os/keyboard.cpp                    |   2 +-
+ core/os/midi_driver.h                   |   6 +-
+ core/os/os.cpp                          |  55 +++++
+ core/os/os.h                            |  39 +++-
+ core/string/string_name.cpp             |  43 ++++
+ core/string/string_name.h               |   4 +
+ core/string/translation_server.cpp      |   6 +
+ core/string/translation_server.h        |   1 +
+ doc/classes/ProjectSettings.xml         |   6 +
+ main/main.cpp                           | 168 +++++++++++++++
+ main/performance.cpp                    |   6 +
+ main/performance.h                      |   1 +
+ platform/linuxbsd/godot_linuxbsd.cpp    |  61 ++++--
+ 30 files changed, 854 insertions(+), 45 deletions(-)
+ create mode 100644 core/input/touch_gesture_recognizer.cpp
+ create mode 100644 core/input/touch_gesture_recognizer.h
+
+diff --git a/core/config/project_settings.cpp b/core/config/project_settings.cpp
+index 0e078c3..f4e625c 100644
+--- a/core/config/project_settings.cpp
++++ b/core/config/project_settings.cpp
+@@ -1849,6 +1849,8 @@ ProjectSettings::ProjectSettings() {
+ 	// Input settings
+ 	GLOBAL_DEF_BASIC("input_devices/pointing/android/enable_long_press_as_right_click", false);
+ 	GLOBAL_DEF_BASIC("input_devices/pointing/android/enable_pan_and_scale_gestures", false);
++	GLOBAL_DEF_BASIC("input_devices/pointing/ios/enable_pan_and_scale_gestures", false);
++	GLOBAL_DEF_BASIC("input_devices/pointing/ios/pencil_as_mouse", false);
+ 	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "input_devices/pointing/android/rotary_input_scroll_axis", PROPERTY_HINT_ENUM, "Horizontal,Vertical"), 1);
+ 	GLOBAL_DEF("input_devices/pointing/android/override_volume_buttons", false);
+ 	GLOBAL_DEF_BASIC("input_devices/pointing/android/disable_scroll_deadzone", false);
+diff --git a/core/input/input.cpp b/core/input/input.cpp
+index 38da1c6..a6b6da6 100644
+--- a/core/input/input.cpp
++++ b/core/input/input.cpp
+@@ -992,15 +992,8 @@ void Input::_parse_input_event_impl(const Ref<InputEvent> &p_event, bool p_is_em
+ 		set_joy_axis(jm->get_device(), jm->get_axis(), jm->get_axis_value());
+ 	}
+ 
+-	Ref<InputEventGesture> ge = p_event;
+-
+-	if (ge.is_valid()) {
+-		if (event_dispatch_function) {
+-			_THREAD_SAFE_UNLOCK_
+-			event_dispatch_function(ge);
+-			_THREAD_SAFE_LOCK_
+-		}
+-	}
++	// Gestures (pan, magnify) are dispatched once, like every other event, at the end of this
++	// function. They used to be dispatched here as well, which applied every gesture twice.
+ 
+ 	for (const KeyValue<StringName, InputMap::Action> &E : InputMap::get_singleton()->get_action_map()) {
+ 		const int event_index = InputMap::get_singleton()->event_get_index(p_event, E.key);
 diff --git a/core/input/input_map.cpp b/core/input/input_map.cpp
 index d18a781..201483e 100644
 --- a/core/input/input_map.cpp
@@ -85,6 +138,409 @@ index d18a781..201483e 100644
  			// OS does not support this override - skip.
  			continue;
  		}
+diff --git a/core/input/touch_gesture_recognizer.cpp b/core/input/touch_gesture_recognizer.cpp
+new file mode 100644
+index 0000000..5ae9cce
+--- /dev/null
++++ b/core/input/touch_gesture_recognizer.cpp
+@@ -0,0 +1,276 @@
++/**************************************************************************/
++/*  touch_gesture_recognizer.cpp                                          */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#include "touch_gesture_recognizer.h"
++
++void TouchGestureRecognizer::set_callbacks(EmitFunc p_emit, TapFunc p_tap, void *p_userdata) {
++	emit_func = p_emit;
++	tap_func = p_tap;
++	userdata = p_userdata;
++}
++
++void TouchGestureRecognizer::_emit(const Ref<InputEvent> &p_event) {
++	if (emit_func) {
++		emit_func(userdata, p_event);
++	}
++}
++
++void TouchGestureRecognizer::_flush_pending() {
++	if (pending_press.is_valid()) {
++		Ref<InputEventScreenTouch> press = pending_press;
++		pending_press.unref();
++		_emit(press);
++		// Deliver the finger's current position if it moved while held back.
++		const Finger *f = fingers.getptr(press->get_index());
++		if (f && f->position != press->get_position()) {
++			Ref<InputEventScreenDrag> drag;
++			drag.instantiate();
++			drag->set_index(press->get_index());
++			drag->set_position(f->position);
++			drag->set_relative(f->position - press->get_position());
++			drag->set_relative_screen_position(drag->get_relative());
++			_emit(drag);
++		}
++	}
++	mode = MODE_PASSTHROUGH;
++}
++
++bool TouchGestureRecognizer::_get_pair(Vector2 &r_center, float &r_distance) const {
++	// The gesture uses the centroid of all fingers, and the spread of the first two for zooming.
++	if (fingers.size() < 2) {
++		return false;
++	}
++	Vector2 sum;
++	Vector2 a, b;
++	int i = 0;
++	for (const KeyValue<int, Finger> &E : fingers) {
++		sum += E.value.position;
++		if (i == 0) {
++			a = E.value.position;
++		} else if (i == 1) {
++			b = E.value.position;
++		}
++		i++;
++	}
++	r_center = sum / fingers.size();
++	r_distance = a.distance_to(b);
++	return true;
++}
++
++void TouchGestureRecognizer::_start_gesture(uint64_t p_usec) {
++	if (mode == MODE_PENDING) {
++		// The first finger was never delivered: nothing to undo.
++		pending_press.unref();
++	} else if (mode == MODE_PASSTHROUGH && first_index != -1) {
++		// The first finger already started an interaction: cancel it.
++		Ref<InputEventScreenTouch> cancel;
++		cancel.instantiate();
++		cancel->set_index(first_index);
++		const Finger *f = fingers.getptr(first_index);
++		cancel->set_position(f ? f->position : Vector2());
++		cancel->set_pressed(false);
++		cancel->set_canceled(true);
++		_emit(cancel);
++	}
++	mode = MODE_GESTURE;
++	gesture_start_usec = first_down_usec ? first_down_usec : p_usec; // Taps are timed from the first finger.
++	gesture_max_fingers = fingers.size();
++	gesture_max_travel = 0.0;
++	gesture_moved = false;
++	_get_pair(last_center, last_distance);
++}
++
++void TouchGestureRecognizer::_update_gesture(const Vector2 &p_position) {
++	Vector2 center;
++	float distance;
++	if (!_get_pair(center, distance)) {
++		return;
++	}
++	const Vector2 pan = center - last_center;
++	if (pan != Vector2()) {
++		Ref<InputEventPanGesture> ev;
++		ev.instantiate();
++		ev->set_position(center);
++		// Content follows the fingers (like scrolling with natural direction).
++		ev->set_delta(-pan * PAN_SCALE);
++		_emit(ev);
++	}
++	if (last_distance > 0.0 && distance > 0.0 && distance != last_distance) {
++		Ref<InputEventMagnifyGesture> ev;
++		ev.instantiate();
++		ev->set_position(center);
++		ev->set_factor(distance / last_distance);
++		_emit(ev);
++	}
++	last_center = center;
++	last_distance = distance;
++}
++
++void TouchGestureRecognizer::touch_press(int p_index, const Vector2 &p_position, bool p_pressed, bool p_double_tap, uint64_t p_usec) {
++	if (!enabled) {
++		Ref<InputEventScreenTouch> ev;
++		ev.instantiate();
++		ev->set_index(p_index);
++		ev->set_position(p_position);
++		ev->set_pressed(p_pressed);
++		ev->set_double_tap(p_double_tap);
++		_emit(ev);
++		return;
++	}
++
++	if (p_pressed) {
++		fingers[p_index] = { p_position, p_position };
++		switch (mode) {
++			case MODE_IDLE: {
++				first_index = p_index;
++				first_down_usec = p_usec;
++				pending_press.instantiate();
++				pending_press->set_index(p_index);
++				pending_press->set_position(p_position);
++				pending_press->set_pressed(true);
++				pending_press->set_double_tap(p_double_tap);
++				mode = MODE_PENDING;
++			} break;
++			case MODE_PENDING:
++			case MODE_PASSTHROUGH: {
++				_start_gesture(p_usec);
++			} break;
++			case MODE_GESTURE: {
++				gesture_max_fingers = MAX(gesture_max_fingers, (int)fingers.size());
++				_get_pair(last_center, last_distance);
++			} break;
++		}
++		return;
++	}
++
++	// Release.
++	const Finger *f = fingers.getptr(p_index);
++	if (!f) {
++		return;
++	}
++	switch (mode) {
++		case MODE_PENDING: {
++			// A quick tap: deliver it now.
++			_flush_pending();
++			[[fallthrough]];
++		}
++		case MODE_PASSTHROUGH: {
++			Ref<InputEventScreenTouch> ev;
++			ev.instantiate();
++			ev->set_index(p_index);
++			ev->set_position(p_position);
++			ev->set_pressed(false);
++			_emit(ev);
++		} break;
++		case MODE_GESTURE: {
++			gesture_max_travel = MAX(gesture_max_travel, f->start_position.distance_to(p_position));
++		} break;
++		case MODE_IDLE:
++			break;
++	}
++	fingers.erase(p_index);
++
++	if (fingers.is_empty()) {
++		if (mode == MODE_GESTURE && !gesture_moved && gesture_max_travel < move_threshold * 2.0 && p_usec - gesture_start_usec < TAP_MAX_USEC && tap_func) {
++			if (gesture_max_fingers == 2) {
++				tap_func(userdata, TAP_UNDO);
++			} else if (gesture_max_fingers == 3) {
++				tap_func(userdata, TAP_REDO);
++			}
++		}
++		mode = MODE_IDLE;
++		first_index = -1;
++		first_down_usec = 0;
++	} else if (mode == MODE_GESTURE) {
++		_get_pair(last_center, last_distance);
++	}
++}
++
++void TouchGestureRecognizer::touch_drag(int p_index, const Vector2 &p_position, const Ref<InputEventScreenDrag> &p_drag, uint64_t p_usec) {
++	if (!enabled) {
++		_emit(p_drag);
++		return;
++	}
++	Finger *f = fingers.getptr(p_index);
++	if (!f) {
++		return;
++	}
++	f->position = p_position;
++
++	switch (mode) {
++		case MODE_PENDING: {
++			if (f->start_position.distance_to(p_position) > move_threshold || p_usec - first_down_usec > HOLD_USEC) {
++				_flush_pending(); // Also delivers the movement so far.
++			}
++		} break;
++		case MODE_PASSTHROUGH: {
++			_emit(p_drag);
++		} break;
++		case MODE_GESTURE: {
++			gesture_max_travel = MAX(gesture_max_travel, f->start_position.distance_to(p_position));
++			if (gesture_max_travel > move_threshold) {
++				gesture_moved = true;
++			}
++			if (gesture_moved) {
++				_update_gesture(p_position);
++			} else {
++				// Keep the reference up to date until the gesture really starts moving.
++				_get_pair(last_center, last_distance);
++			}
++		} break;
++		case MODE_IDLE:
++			break;
++	}
++}
++
++void TouchGestureRecognizer::touch_cancel(int p_index, uint64_t p_usec) {
++	if (!enabled || mode == MODE_PASSTHROUGH) {
++		Ref<InputEventScreenTouch> ev;
++		ev.instantiate();
++		ev->set_index(p_index);
++		const Finger *f = fingers.getptr(p_index);
++		ev->set_position(f ? f->position : Vector2());
++		ev->set_pressed(false);
++		ev->set_canceled(true);
++		_emit(ev);
++	}
++	fingers.erase(p_index);
++	if (fingers.is_empty()) {
++		pending_press.unref();
++		mode = MODE_IDLE;
++		first_index = -1;
++	}
++}
++
++void TouchGestureRecognizer::update(uint64_t p_usec) {
++	if (enabled && mode == MODE_PENDING && p_usec - first_down_usec > HOLD_USEC) {
++		_flush_pending();
++	}
++}
+diff --git a/core/input/touch_gesture_recognizer.h b/core/input/touch_gesture_recognizer.h
+new file mode 100644
+index 0000000..3df0d7f
+--- /dev/null
++++ b/core/input/touch_gesture_recognizer.h
+@@ -0,0 +1,115 @@
++/**************************************************************************/
++/*  touch_gesture_recognizer.h                                            */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#pragma once
++
++#include "core/input/input_event.h"
++#include "core/templates/hash_map.h"
++#include "core/variant/callable.h"
++
++// Drawing-app style multi-touch navigation for touchscreens (used by the iPadOS editor):
++// - two-finger drag  -> InputEventPanGesture (canvases pan with the fingers),
++// - pinch            -> InputEventMagnifyGesture (zoom around the pinch center),
++// - two-finger tap   -> undo, three-finger tap -> redo (reported through a callback).
++// Single-finger input is forwarded unchanged, except that the first touch is held back for a
++// short moment: if a second finger arrives during that time, the first one is never delivered,
++// so starting a gesture doesn't select, draw or move anything. If the second finger arrives later,
++// the first touch is canceled.
++//
++// The recognizer is platform-independent: the platform feeds it raw touches and the current time,
++// and it emits the events to deliver (in order) through `p_emit`.
++class TouchGestureRecognizer {
++public:
++	enum TapAction {
++		TAP_NONE,
++		TAP_UNDO, // Two-finger tap.
++		TAP_REDO, // Three-finger tap.
++	};
++
++	// Pan gesture deltas are in pixels multiplied by this scale. With the editor's default 2D pan
++	// speed (20), the 2D canvas then follows the fingers exactly.
++	static constexpr float PAN_SCALE = 1.0f / 20.0f;
++	static constexpr uint64_t HOLD_USEC = 110000; // How long a first touch is held back.
++	static constexpr uint64_t TAP_MAX_USEC = 300000;
++
++	typedef void (*EmitFunc)(void *p_userdata, const Ref<InputEvent> &p_event);
++	typedef void (*TapFunc)(void *p_userdata, TapAction p_action);
++
++private:
++	enum Mode {
++		MODE_IDLE,
++		MODE_PENDING, // One finger down, not delivered yet.
++		MODE_PASSTHROUGH, // One finger, delivered as regular touch input.
++		MODE_GESTURE, // Two or more fingers: pan/zoom.
++	};
++
++	struct Finger {
++		Vector2 position;
++		Vector2 start_position;
++	};
++
++	Mode mode = MODE_IDLE;
++	HashMap<int, Finger> fingers;
++	int first_index = -1;
++	Ref<InputEventScreenTouch> pending_press;
++	uint64_t first_down_usec = 0;
++	uint64_t gesture_start_usec = 0;
++	int gesture_max_fingers = 0;
++	float gesture_max_travel = 0.0;
++	bool gesture_moved = false;
++	Vector2 last_center;
++	float last_distance = 0.0;
++	float move_threshold = 10.0; // Pixels.
++
++	EmitFunc emit_func = nullptr;
++	TapFunc tap_func = nullptr;
++	void *userdata = nullptr;
++
++	void _emit(const Ref<InputEvent> &p_event);
++	void _flush_pending();
++	void _start_gesture(uint64_t p_usec);
++	void _update_gesture(const Vector2 &p_position);
++	bool _get_pair(Vector2 &r_center, float &r_distance) const;
++
++public:
++	bool enabled = false;
++
++	void set_callbacks(EmitFunc p_emit, TapFunc p_tap, void *p_userdata);
++	void set_move_threshold(float p_pixels) { move_threshold = p_pixels; }
++
++	// Raw touch input. Returns immediately (events are emitted through the callbacks).
++	void touch_press(int p_index, const Vector2 &p_position, bool p_pressed, bool p_double_tap, uint64_t p_usec);
++	void touch_drag(int p_index, const Vector2 &p_position, const Ref<InputEventScreenDrag> &p_drag, uint64_t p_usec);
++	void touch_cancel(int p_index, uint64_t p_usec);
++	// Call regularly (e.g. every frame) so that a held-back first touch is delivered on time.
++	void update(uint64_t p_usec);
++
++	bool is_gesture_active() const { return mode == MODE_GESTURE; }
++};
 diff --git a/core/io/file_access_zip.cpp b/core/io/file_access_zip.cpp
 index 2bb9db7..39fb437 100644
 --- a/core/io/file_access_zip.cpp
@@ -624,6 +1080,23 @@ index aa64c81..e7f5676 100644
  	TranslationServer();
 +	~TranslationServer();
  };
+diff --git a/doc/classes/ProjectSettings.xml b/doc/classes/ProjectSettings.xml
+index 14e3133..7d40baf 100644
+--- a/doc/classes/ProjectSettings.xml
++++ b/doc/classes/ProjectSettings.xml
+@@ -1704,6 +1704,12 @@
+ 		<member name="input_devices/pointing/emulate_touch_from_mouse" type="bool" setter="" getter="" default="false">
+ 			If [code]true[/code], sends touch input events when clicking or dragging the mouse.
+ 		</member>
++		<member name="input_devices/pointing/ios/enable_pan_and_scale_gestures" type="bool" setter="" getter="" default="false">
++			If [code]true[/code], two-finger drags on iOS/iPadOS are reported as [InputEventPanGesture] and pinches as [InputEventMagnifyGesture] (the first finger is held back for a moment, and canceled if a second finger follows, so that a gesture doesn't also produce single-finger input). The iPadOS editor always uses this, controlled by the [code]interface/touchscreen/enable_pan_and_scale_gestures[/code] editor setting.
++		</member>
++		<member name="input_devices/pointing/ios/pencil_as_mouse" type="bool" setter="" getter="" default="false">
++			If [code]true[/code], the Apple Pencil is reported as a mouse (with pressure and tilt in [InputEventMouseMotion]) instead of as touches on iOS/iPadOS. The iPadOS editor always uses the Apple Pencil as a mouse.
++		</member>
+ 		<member name="input_devices/sensors/enable_accelerometer" type="bool" setter="" getter="" default="false">
+ 			If [code]true[/code], the accelerometer sensor is enabled and [method Input.get_accelerometer] returns valid data.
+ 		</member>
 diff --git a/main/main.cpp b/main/main.cpp
 index 2fc62fd..f23c48d 100644
 --- a/main/main.cpp

@@ -108,6 +108,7 @@ func _stage_editor() -> void:
 	await _test_scene_editing()
 	_test_scripts()
 	await _test_viewports()
+	await _test_canvas_gestures()
 	_write_results(false)
 
 	# Run the project. On iPadOS this closes the editor, runs the game in-process and reopens the editor.
@@ -544,3 +545,67 @@ func _write_mode_results(file: String, data: Dictionary) -> void:
 	var f := FileAccess.open(RESULTS_DIR.path_join(file), FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(data, "\t"))
+
+
+# --- Touch canvas gestures (what the iPadOS gesture recognizer emits for two fingers) -------------
+
+func _gesture_center(vp: Viewport) -> Vector2:
+	var container := vp.get_parent() as Control
+	return container.get_global_rect().get_center() if container else Vector2()
+
+
+func _test_canvas_gestures() -> void:
+	if DisplayServer.get_name() == "headless":
+		check("gesture_2d_pinch_zoom", true, "skipped (headless)")
+		check("gesture_2d_two_finger_pan", true, "skipped (headless)")
+		check("gesture_3d_two_finger_pan", true, "skipped (headless)")
+		check("gesture_3d_pinch_zoom", true, "skipped (headless)")
+		return
+	EditorInterface.open_scene_from_path(GEN_DIR.path_join("test_scene.tscn"))
+	EditorInterface.set_main_screen_editor("2D")
+	await _wait_frames(20)
+	var vp2d := EditorInterface.get_editor_viewport_2d()
+	var center := _gesture_center(vp2d)
+	var before := vp2d.global_canvas_transform
+	var mag := InputEventMagnifyGesture.new()
+	mag.position = center
+	mag.factor = 1.5
+	Input.parse_input_event(mag)
+	await _wait_frames(5)
+	var after_zoom := vp2d.global_canvas_transform
+	check("gesture_2d_pinch_zoom", after_zoom.get_scale().x > before.get_scale().x * 1.2, "%s -> %s" % [before.get_scale(), after_zoom.get_scale()])
+	# Two fingers moved 100 px to the right: the canvas must follow them exactly.
+	var pan := InputEventPanGesture.new()
+	pan.position = center
+	pan.delta = Vector2(-100, 0) / 20.0 # TouchGestureRecognizer::PAN_SCALE
+	Input.parse_input_event(pan)
+	await _wait_frames(5)
+	var moved := vp2d.global_canvas_transform.origin - after_zoom.origin
+	check("gesture_2d_two_finger_pan", is_equal_approx(moved.x, 100.0) and is_zero_approx(moved.y), moved)
+
+	EditorInterface.open_scene_from_path(GEN_DIR.path_join("test_3d.tscn"))
+	EditorInterface.set_main_screen_editor("3D")
+	await _wait_frames(20)
+	var vp3d := EditorInterface.get_editor_viewport_3d(0)
+	var cam := vp3d.get_camera_3d()
+	var c3 := _gesture_center(vp3d)
+	var t0 := cam.global_transform
+	var pan3 := InputEventPanGesture.new()
+	pan3.position = c3
+	pan3.delta = Vector2(-80, 0) / 20.0
+	Input.parse_input_event(pan3)
+	await _wait_frames(10)
+	var t1 := cam.global_transform
+	if DisplayServer.is_touchscreen_available():
+		check("gesture_3d_two_finger_pan", not t1.origin.is_equal_approx(t0.origin) and t1.basis.is_equal_approx(t0.basis), "%s -> %s" % [t0.origin, t1.origin])
+	else:
+		check("gesture_3d_two_finger_pan", true, "skipped (no touchscreen: unmodified pan gestures are left to desktop trackpads)")
+	var mag3 := InputEventMagnifyGesture.new()
+	mag3.position = c3
+	mag3.factor = 1.5
+	Input.parse_input_event(mag3)
+	await _wait_frames(10)
+	var t2 := cam.global_transform
+	check("gesture_3d_pinch_zoom", not t2.origin.is_equal_approx(t1.origin), "%s -> %s" % [t1.origin, t2.origin])
+	EditorInterface.open_scene_from_path(GEN_DIR.path_join("test_scene.tscn"))
+	EditorInterface.set_main_screen_editor("2D")

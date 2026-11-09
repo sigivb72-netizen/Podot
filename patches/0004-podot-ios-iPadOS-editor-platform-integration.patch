@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 17:07:04 +0000
+Date: Mon, 9 Nov 2026 12:40:14 +0000
 Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
 
 - Enable in-process instances in editor builds; relaunch Main in-process
@@ -16,8 +16,8 @@ Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
 - Native file dialogs (UIDocumentPickerViewController) with persisted
   security-scoped bookmarks; Files app integration.
 ---
- .../display_server_apple_embedded.h           |  30 ++-
- .../display_server_apple_embedded.mm          |  18 +-
+ .../display_server_apple_embedded.h           |  40 ++-
+ .../display_server_apple_embedded.mm          |  83 +++++-
  .../display_server_apple_embedded_pointer.mm  | 180 +++++++++++++
  .../godot_view_apple_embedded.h               |   6 +
  .../godot_view_apple_embedded.mm              | 246 +++++++++++++++++-
@@ -36,7 +36,7 @@ Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
  platform/ios/main_ios.mm                      |  46 ++++
  platform/ios/os_ios.h                         |  12 +
  platform/ios/os_ios.mm                        | 127 +++++++++
- 20 files changed, 1308 insertions(+), 37 deletions(-)
+ 20 files changed, 1373 insertions(+), 47 deletions(-)
  create mode 100644 drivers/apple_embedded/display_server_apple_embedded_pointer.mm
  create mode 100644 platform/ios/ios_document_picker.h
  create mode 100644 platform/ios/ios_document_picker.mm
@@ -44,10 +44,18 @@ Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
  create mode 100644 platform/ios/ipados_editor_support.mm
 
 diff --git a/drivers/apple_embedded/display_server_apple_embedded.h b/drivers/apple_embedded/display_server_apple_embedded.h
-index f8efc73..8297bba 100644
+index f8efc73..c176a87 100644
 --- a/drivers/apple_embedded/display_server_apple_embedded.h
 +++ b/drivers/apple_embedded/display_server_apple_embedded.h
-@@ -56,6 +56,7 @@
+@@ -30,6 +30,7 @@
+ 
+ #pragma once
+ 
++#include "core/input/touch_gesture_recognizer.h"
+ #include "core/os/thread_safe.h"
+ #include "servers/display/display_server.h"
+ 
+@@ -56,6 +57,7 @@
  #import <QuartzCore/CAMetalLayer.h>
  
  class InputEvent;
@@ -55,7 +63,7 @@ index f8efc73..8297bba 100644
  class NativeMenu;
  
  /// "Embedded" as in "Embedded Device".
-@@ -85,6 +86,15 @@ class DisplayServerAppleEmbedded : public DisplayServer {
+@@ -85,6 +87,24 @@ class DisplayServerAppleEmbedded : public DisplayServer {
  
  	int virtual_keyboard_height = 0;
  
@@ -68,10 +76,19 @@ index f8efc73..8297bba 100644
 +	id hardware_keyboard_observer_disconnect = nil;
 +	void _apply_modifiers(const Ref<InputEventWithModifiers> &p_event, NSInteger p_modifier) const;
 +
++	// Drawing-app style canvas gestures (two-finger pan, pinch zoom, two/three-finger tap for
++	// undo/redo). Enabled in the editor (interface/touchscreen/enable_pan_and_scale_gestures) and in
++	// projects that set input_devices/pointing/ios/enable_pan_and_scale_gestures.
++	TouchGestureRecognizer touch_gestures;
++	int touch_gestures_state = -1; // -1: not determined yet.
++	void _update_touch_gestures_enabled();
++	static void _touch_gesture_emit(void *p_userdata, const Ref<InputEvent> &p_event);
++	static void _touch_gesture_tap(void *p_userdata, TouchGestureRecognizer::TapAction p_action);
++
  	void perform_event(const Ref<InputEvent> &p_event);
  
  	void initialize_tts() const;
-@@ -135,9 +145,27 @@ public:
+@@ -135,9 +155,27 @@ public:
  	void touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt);
  	void touches_canceled(int p_idx);
  
@@ -101,10 +118,29 @@ index f8efc73..8297bba 100644
  
  	// MARK: Motion
 diff --git a/drivers/apple_embedded/display_server_apple_embedded.mm b/drivers/apple_embedded/display_server_apple_embedded.mm
-index fc116e4..f9699cd 100644
+index fc116e4..3aa881f 100644
 --- a/drivers/apple_embedded/display_server_apple_embedded.mm
 +++ b/drivers/apple_embedded/display_server_apple_embedded.mm
-@@ -180,6 +180,15 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
+@@ -30,6 +30,7 @@
+ 
+ #import "display_server_apple_embedded.h"
+ 
++#include "core/config/engine.h"
+ #include "core/config/project_settings.h"
+ #include "core/input/input.h"
+ #include "core/io/file_access_pack.h"
+@@ -44,6 +45,10 @@
+ #import "drivers/apple_embedded/tts_apple_embedded.h"
+ #include "servers/display/native_menu.h"
+ 
++#ifdef TOOLS_ENABLED
++#include "editor/settings/editor_settings.h"
++#endif
++
+ #import <GameController/GameController.h>
+ 
+ static const float kDisplayServerIOSAcceleration = 1.f;
+@@ -180,6 +185,15 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
  }
  
  DisplayServerAppleEmbedded::~DisplayServerAppleEmbedded() {
@@ -120,7 +156,93 @@ index fc116e4..f9699cd 100644
  	if (native_menu) {
  		memdelete(native_menu);
  		native_menu = nullptr;
-@@ -307,10 +316,10 @@ void DisplayServerAppleEmbedded::touches_canceled(int p_idx) {
+@@ -240,6 +254,8 @@ void DisplayServerAppleEmbedded::window_set_drop_files_callback(const Callable &
+ }
+ 
+ void DisplayServerAppleEmbedded::process_events() {
++	// Deliver a held-back first touch once it's clear that no second finger follows.
++	touch_gestures.update(OS::get_singleton()->get_ticks_usec());
+ 	Input::get_singleton()->flush_buffered_events();
+ }
+ 
+@@ -269,15 +285,51 @@ void DisplayServerAppleEmbedded::_window_callback(const Callable &p_callable, co
+ 
+ // MARK: Touches
+ 
+-void DisplayServerAppleEmbedded::touch_press(int p_idx, int p_x, int p_y, bool p_pressed, bool p_double_click) {
+-	Ref<InputEventScreenTouch> ev;
+-	ev.instantiate();
++void DisplayServerAppleEmbedded::_update_touch_gestures_enabled() {
++	if (touch_gestures_state != -1) {
++		return;
++	}
++	bool enabled = GLOBAL_GET("input_devices/pointing/ios/enable_pan_and_scale_gestures");
++#ifdef TOOLS_ENABLED
++	if (Engine::get_singleton()->is_editor_hint() || Engine::get_singleton()->is_project_manager_hint()) {
++		enabled = EditorSettings::get_singleton() ? bool(EDITOR_GET("interface/touchscreen/enable_pan_and_scale_gestures")) : true;
++	}
++#endif
++	touch_gestures_state = enabled ? 1 : 0;
++	touch_gestures.enabled = enabled;
++	touch_gestures.set_move_threshold(10.0 * screen_get_max_scale());
++	touch_gestures.set_callbacks(&DisplayServerAppleEmbedded::_touch_gesture_emit, &DisplayServerAppleEmbedded::_touch_gesture_tap, this);
++}
+ 
+-	ev->set_index(p_idx);
+-	ev->set_pressed(p_pressed);
+-	ev->set_position(Vector2(p_x, p_y));
+-	ev->set_double_tap(p_double_click);
+-	perform_event(ev);
++void DisplayServerAppleEmbedded::_touch_gesture_emit(void *p_userdata, const Ref<InputEvent> &p_event) {
++	static_cast<DisplayServerAppleEmbedded *>(p_userdata)->perform_event(p_event);
++}
++
++void DisplayServerAppleEmbedded::_touch_gesture_tap(void *p_userdata, TouchGestureRecognizer::TapAction p_action) {
++	DisplayServerAppleEmbedded *ds = static_cast<DisplayServerAppleEmbedded *>(p_userdata);
++#ifdef TOOLS_ENABLED
++	// Undo/redo taps are an editor convenience (as in drawing apps); projects handle taps themselves.
++	if (!Engine::get_singleton()->is_editor_hint()) {
++		return;
++	}
++	// Send the editor's own shortcuts (Command+Z / Command+Shift+Z on Apple keyboards).
++	for (int pressed = 1; pressed >= 0; pressed--) {
++		Ref<InputEventKey> ev;
++		ev.instantiate();
++		ev->set_keycode(Key::Z);
++		ev->set_physical_keycode(Key::Z);
++		ev->set_key_label(Key::Z);
++		ev->set_meta_pressed(true);
++		ev->set_shift_pressed(p_action == TouchGestureRecognizer::TAP_REDO);
++		ev->set_pressed(pressed);
++		ds->perform_event(ev);
++	}
++#endif
++}
++
++void DisplayServerAppleEmbedded::touch_press(int p_idx, int p_x, int p_y, bool p_pressed, bool p_double_click) {
++	_update_touch_gestures_enabled();
++	touch_gestures.touch_press(p_idx, Vector2(p_x, p_y), p_pressed, p_double_click, OS::get_singleton()->get_ticks_usec());
+ }
+ 
+ void DisplayServerAppleEmbedded::touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt) {
+@@ -289,7 +341,8 @@ void DisplayServerAppleEmbedded::touch_drag(int p_idx, int p_prev_x, int p_prev_
+ 	ev->set_position(Vector2(p_x, p_y));
+ 	ev->set_relative(Vector2(p_x - p_prev_x, p_y - p_prev_y));
+ 	ev->set_relative_screen_position(ev->get_relative());
+-	perform_event(ev);
++	_update_touch_gestures_enabled();
++	touch_gestures.touch_drag(p_idx, Vector2(p_x, p_y), ev, OS::get_singleton()->get_ticks_usec());
+ }
+ 
+ void DisplayServerAppleEmbedded::perform_event(const Ref<InputEvent> &p_event) {
+@@ -302,15 +355,16 @@ void DisplayServerAppleEmbedded::perform_event(const Ref<InputEvent> &p_event) {
+ }
+ 
+ void DisplayServerAppleEmbedded::touches_canceled(int p_idx) {
+-	touch_press(p_idx, -1, -1, false, false);
++	_update_touch_gestures_enabled();
++	touch_gestures.touch_cancel(p_idx, OS::get_singleton()->get_ticks_usec());
+ }
  
  // MARK: Keyboard
  
@@ -133,7 +255,7 @@ index fc116e4..f9699cd 100644
  	ev->set_pressed(p_pressed);
  	ev->set_keycode(fix_keycode(p_char, p_key));
  	if (@available(iOS 13.4, *)) {
-@@ -375,6 +384,11 @@ bool DisplayServerAppleEmbedded::has_feature(DisplayServerEnums::Feature p_featu
+@@ -375,6 +429,11 @@ bool DisplayServerAppleEmbedded::has_feature(DisplayServerEnums::Feature p_featu
  		// case DisplayServerEnums::FEATURE_NATIVE_DIALOG_FILE_MIME:
  		// case DisplayServerEnums::FEATURE_NATIVE_ICON:
  		// case DisplayServerEnums::FEATURE_WINDOW_TRANSPARENCY:
@@ -1003,7 +1125,7 @@ index 01f16b0..38e17a1 100644
  	virtual bool _screen_hdr_is_supported() const override;
  	virtual float _screen_potential_edr_headroom() const override;
 diff --git a/platform/ios/display_server_ios.mm b/platform/ios/display_server_ios.mm
-index ee86f71..baf6178 100644
+index ee86f71..006f2f2 100644
 --- a/platform/ios/display_server_ios.mm
 +++ b/platform/ios/display_server_ios.mm
 @@ -31,6 +31,10 @@
@@ -1024,7 +1146,7 @@ index ee86f71..baf6178 100644
 +
 +	// Apple Pencil acts as a precise mouse in the editor and project manager (like on desktop),
 +	// while projects get touch events with pressure and tilt unless they opt in.
-+	pencil_as_mouse = GLOBAL_DEF("input_devices/pointing/ios/pencil_as_mouse", false);
++	pencil_as_mouse = GLOBAL_GET("input_devices/pointing/ios/pencil_as_mouse");
 +#ifdef TOOLS_ENABLED
 +	if (Engine::get_singleton()->is_editor_hint() || Engine::get_singleton()->is_project_manager_hint()) {
 +		pencil_as_mouse = true;

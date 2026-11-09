@@ -89,13 +89,23 @@ Godot turned all of them into screen touches. `GDTView` now routes them:
 
 | Device | Godot events |
 |---|---|
-| Finger | `InputEventScreenTouch/Drag` (unchanged; the editor's touch optimizations apply) |
+| One finger | `InputEventScreenTouch/Drag` (the editor's touch optimizations apply). In the editor, the first touch is held back for ~0.1 s so that a following second finger never selects or moves anything |
+| Two-finger drag (canvas gestures) | `InputEventPanGesture`: the 2D canvas, TileMap/texture-region editors, animation and shader graphs and the 3D viewport pan **with the fingers**, like a drawing app |
+| Pinch | `InputEventMagnifyGesture`: zoom around the pinch center (2D, 3D, graphs, code editor font size) |
+| Two-finger tap / three-finger tap | Undo / Redo in the editor (the editor's own ⌘Z / ⇧⌘Z shortcuts) |
 | Mouse / trackpad buttons (`UITouchTypeIndirectPointer`, requires `UIApplicationSupportsIndirectInputEvents`) | `InputEventMouseButton` left/right/middle, `InputEventMouseMotion` with button mask, double click |
 | Pointer hover (`UIHoverGestureRecognizer`) | `InputEventMouseMotion` |
 | Scroll wheel / two-finger trackpad scroll | `InputEventPanGesture` (same scale as macOS precise scrolling) |
 | Trackpad pinch | `InputEventMagnifyGesture` |
 | Apple Pencil | In the editor and project manager: mouse events with pressure and tilt (precise, no touch emulation lag). In projects: touches as upstream, or mouse with `input_devices/pointing/ios/pencil_as_mouse=true` |
 | Hardware keyboard | `InputEventKey` (upstream) plus key repeat (UIKit doesn't report repeats), macOS key conventions for shortcuts (⌘/⌥), keyboard connect/disconnect notifications (the touch actions panel hides when a keyboard is attached) |
+
+The canvas gestures come from `TouchGestureRecognizer` (`core/input/`), a platform-independent
+recognizer fed by the iOS view; it is unit-tested on its own. They are on in the editor
+(`interface/touchscreen/enable_pan_and_scale_gestures`) and opt-in for projects
+(`input_devices/pointing/ios/enable_pan_and_scale_gestures`). Two upstream bugs had to be fixed for
+them to feel right: `Input` dispatched every gesture event twice (so pinches and trackpad pans were
+applied twice on all platforms), and `ViewPanner` didn't accept pan gestures.
 
 The pointer shape follows `DisplayServer::cursor_set_shape()` through `UIPointerInteraction`
 (I-beam in text, resize beams on splitters, ...).

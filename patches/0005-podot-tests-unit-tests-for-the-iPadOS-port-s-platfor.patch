@@ -1,13 +1,15 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 17:07:04 +0000
+Date: Mon, 9 Nov 2026 12:40:14 +0000
 Subject: [PATCH 5/5] podot: tests: unit tests for the iPadOS port's
  platform-independent parts
 
 ---
- tests/podot/test_podot_ipados.cpp | 202 ++++++++++++++++++++++++++++++
- 1 file changed, 202 insertions(+)
+ tests/podot/test_podot_ipados.cpp   | 202 ++++++++++++++++++++++++++
+ tests/podot/test_touch_gestures.cpp | 210 ++++++++++++++++++++++++++++
+ 2 files changed, 412 insertions(+)
  create mode 100644 tests/podot/test_podot_ipados.cpp
+ create mode 100644 tests/podot/test_touch_gestures.cpp
 
 diff --git a/tests/podot/test_podot_ipados.cpp b/tests/podot/test_podot_ipados.cpp
 new file mode 100644
@@ -217,3 +219,219 @@ index 0000000..ecc92e3
 +#endif // TOOLS_ENABLED
 +
 +} // namespace TestPodotIPadOS
+diff --git a/tests/podot/test_touch_gestures.cpp b/tests/podot/test_touch_gestures.cpp
+new file mode 100644
+index 0000000..6ca0e60
+--- /dev/null
++++ b/tests/podot/test_touch_gestures.cpp
+@@ -0,0 +1,210 @@
++/**************************************************************************/
++/*  test_touch_gestures.cpp                                               */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#include "tests/test_macros.h"
++
++TEST_FORCE_LINK(test_touch_gestures)
++
++#include "core/input/touch_gesture_recognizer.h"
++
++namespace TestTouchGestures {
++
++struct Recorder {
++	Vector<Ref<InputEvent>> events;
++	Vector<TouchGestureRecognizer::TapAction> taps;
++
++	static void emit(void *p_ud, const Ref<InputEvent> &p_event) { static_cast<Recorder *>(p_ud)->events.push_back(p_event); }
++	static void tap(void *p_ud, TouchGestureRecognizer::TapAction p_action) { static_cast<Recorder *>(p_ud)->taps.push_back(p_action); }
++
++	int count_touch(bool p_pressed, bool p_canceled = false) const {
++		int n = 0;
++		for (const Ref<InputEvent> &e : events) {
++			Ref<InputEventScreenTouch> t = e;
++			if (t.is_valid() && t->is_pressed() == p_pressed && t->is_canceled() == p_canceled) {
++				n++;
++			}
++		}
++		return n;
++	}
++	template <typename T>
++	Vector<Ref<T>> of_type() const {
++		Vector<Ref<T>> r;
++		for (const Ref<InputEvent> &e : events) {
++			Ref<T> t = e;
++			if (t.is_valid()) {
++				r.push_back(t);
++			}
++		}
++		return r;
++	}
++};
++
++static Ref<InputEventScreenDrag> drag(int p_index, Vector2 p_from, Vector2 p_to) {
++	Ref<InputEventScreenDrag> d;
++	d.instantiate();
++	d->set_index(p_index);
++	d->set_position(p_to);
++	d->set_relative(p_to - p_from);
++	return d;
++}
++
++static void setup(TouchGestureRecognizer &r, Recorder &rec) {
++	r.enabled = true;
++	r.set_callbacks(&Recorder::emit, &Recorder::tap, &rec);
++}
++
++TEST_CASE("[Podot][TouchGestures] Disabled recognizer forwards touches unchanged") {
++	TouchGestureRecognizer r;
++	Recorder rec;
++	r.set_callbacks(&Recorder::emit, &Recorder::tap, &rec);
++	r.touch_press(0, Vector2(10, 10), true, false, 0);
++	r.touch_drag(0, Vector2(20, 10), drag(0, Vector2(10, 10), Vector2(20, 10)), 1000);
++	r.touch_press(0, Vector2(20, 10), false, false, 2000);
++	CHECK(rec.events.size() == 3);
++}
++
++TEST_CASE("[Podot][TouchGestures] Single finger: held back briefly, then delivered") {
++	TouchGestureRecognizer r;
++	Recorder rec;
++	setup(r, rec);
++	r.touch_press(0, Vector2(100, 100), true, false, 0);
++	CHECK(rec.events.is_empty()); // Held back.
++	r.update(TouchGestureRecognizer::HOLD_USEC + 1);
++	CHECK(rec.count_touch(true) == 1);
++	r.touch_drag(0, Vector2(150, 100), drag(0, Vector2(100, 100), Vector2(150, 100)), 200000);
++	CHECK(rec.of_type<InputEventScreenDrag>().size() == 1);
++	r.touch_press(0, Vector2(150, 100), false, false, 300000);
++	CHECK(rec.count_touch(false) == 1);
++	CHECK(rec.of_type<InputEventPanGesture>().is_empty());
++}
++
++TEST_CASE("[Podot][TouchGestures] A quick tap is delivered as press and release") {
++	TouchGestureRecognizer r;
++	Recorder rec;
++	setup(r, rec);
++	r.touch_press(0, Vector2(5, 5), true, false, 0);
++	r.touch_press(0, Vector2(5, 5), false, false, 50000);
++	CHECK(rec.count_touch(true) == 1);
++	CHECK(rec.count_touch(false) == 1);
++}
++
++TEST_CASE("[Podot][TouchGestures] Moving the first finger delivers it immediately") {
++	TouchGestureRecognizer r;
++	Recorder rec;
++	setup(r, rec);
++	r.touch_press(0, Vector2(0, 0), true, false, 0);
++	r.touch_drag(0, Vector2(30, 0), drag(0, Vector2(0, 0), Vector2(30, 0)), 20000);
++	CHECK(rec.count_touch(true) == 1);
++	REQUIRE(rec.of_type<InputEventScreenDrag>().size() == 1);
++	CHECK(rec.of_type<InputEventScreenDrag>()[0]->get_position() == Vector2(30, 0));
++}
++
++TEST_CASE("[Podot][TouchGestures] Two-finger drag pans, first finger never delivered") {
++	TouchGestureRecognizer r;
++	Recorder rec;
++	setup(r, rec);
++	r.touch_press(0, Vector2(100, 100), true, false, 0);
++	r.touch_press(1, Vector2(200, 100), true, false, 30000);
++	CHECK(r.is_gesture_active());
++	// Both fingers move right by 40 px.
++	r.touch_drag(0, Vector2(140, 100), drag(0, Vector2(100, 100), Vector2(140, 100)), 60000);
++	r.touch_drag(1, Vector2(240, 100), drag(1, Vector2(200, 100), Vector2(240, 100)), 60000);
++	r.touch_press(0, Vector2(140, 100), false, false, 400000);
++	r.touch_press(1, Vector2(240, 100), false, false, 400000);
++
++	CHECK(rec.events.size() > 0);
++	CHECK(rec.count_touch(true) == 0); // No stray single-finger input.
++	CHECK(rec.of_type<InputEventScreenDrag>().is_empty());
++	Vector2 total;
++	for (const Ref<InputEventPanGesture> &p : rec.of_type<InputEventPanGesture>()) {
++		total += p->get_delta();
++	}
++	CHECK(total.is_equal_approx(Vector2(-40, 0) * TouchGestureRecognizer::PAN_SCALE));
++	CHECK(rec.taps.is_empty()); // It moved: not a tap.
++}
++
++TEST_CASE("[Podot][TouchGestures] Pinch zooms around the center") {
++	TouchGestureRecognizer r;
++	Recorder rec;
++	setup(r, rec);
++	r.touch_press(0, Vector2(100, 100), true, false, 0);
++	r.touch_press(1, Vector2(200, 100), true, false, 10000);
++	// Spread the fingers symmetrically: distance 100 -> 200.
++	r.touch_drag(0, Vector2(50, 100), drag(0, Vector2(100, 100), Vector2(50, 100)), 50000);
++	r.touch_drag(1, Vector2(250, 100), drag(1, Vector2(200, 100), Vector2(250, 100)), 50000);
++	float factor = 1.0;
++	for (const Ref<InputEventMagnifyGesture> &m : rec.of_type<InputEventMagnifyGesture>()) {
++		factor *= m->get_factor();
++		CHECK(m->get_position().y == doctest::Approx(100));
++	}
++	CHECK(factor == doctest::Approx(2.0));
++}
++
++TEST_CASE("[Podot][TouchGestures] Second finger after the first was delivered cancels it") {
++	TouchGestureRecognizer r;
++	Recorder rec;
++	setup(r, rec);
++	r.touch_press(0, Vector2(10, 10), true, false, 0);
++	r.update(TouchGestureRecognizer::HOLD_USEC + 1);
++	CHECK(rec.count_touch(true) == 1);
++	r.touch_press(1, Vector2(60, 10), true, false, 500000);
++	CHECK(rec.count_touch(false, true) == 1); // Canceled release for finger 0.
++}
++
++TEST_CASE("[Podot][TouchGestures] Two- and three-finger taps") {
++	TouchGestureRecognizer r;
++	Recorder rec;
++	setup(r, rec);
++	r.touch_press(0, Vector2(10, 10), true, false, 0);
++	r.touch_press(1, Vector2(60, 10), true, false, 10000);
++	r.touch_press(0, Vector2(10, 10), false, false, 120000);
++	r.touch_press(1, Vector2(60, 10), false, false, 130000);
++	REQUIRE(rec.taps.size() == 1);
++	CHECK(rec.taps[0] == TouchGestureRecognizer::TAP_UNDO);
++
++	r.touch_press(0, Vector2(10, 10), true, false, 1000000);
++	r.touch_press(1, Vector2(60, 10), true, false, 1010000);
++	r.touch_press(2, Vector2(110, 10), true, false, 1020000);
++	r.touch_press(0, Vector2(10, 10), false, false, 1150000);
++	r.touch_press(1, Vector2(60, 10), false, false, 1150000);
++	r.touch_press(2, Vector2(110, 10), false, false, 1150000);
++	REQUIRE(rec.taps.size() == 2);
++	CHECK(rec.taps[1] == TouchGestureRecognizer::TAP_REDO);
++	CHECK(rec.count_touch(true) == 0);
++
++	// A slow two-finger hold is not a tap.
++	r.touch_press(0, Vector2(10, 10), true, false, 3000000);
++	r.touch_press(1, Vector2(60, 10), true, false, 3010000);
++	r.touch_press(0, Vector2(10, 10), false, false, 4000000);
++	r.touch_press(1, Vector2(60, 10), false, false, 4000000);
++	CHECK(rec.taps.size() == 2);
++}
++
++} // namespace TestTouchGestures

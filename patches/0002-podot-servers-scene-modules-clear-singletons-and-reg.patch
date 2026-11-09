@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Sun, 8 Nov 2026 17:07:03 +0000
+Date: Mon, 9 Nov 2026 12:40:13 +0000
 Subject: [PATCH 2/5] podot: servers, scene, modules: clear singletons and
  registries on teardown
 
@@ -9,6 +9,10 @@ instances): singletons clear their pointer in their destructor, the
 rendering server globals (RSG) are cleared after the renderer is
 finalized, and registries filled at every setup (movie writers, scene
 idle callbacks, navigation server managers) are reset or de-duplicated.
+
+Touch gestures: ViewPanner accepts pan gestures (it handled them but
+let them propagate), and the 3D viewport pans with unmodified pan
+gestures on touchscreens (two-finger drag).
 ---
  drivers/gles3/rasterizer_gles3.cpp              |  4 ++++
  .../gdscript_language_protocol.h                |  3 +++
@@ -21,7 +25,9 @@ idle callbacks, navigation server managers) are reset or de-duplicated.
  .../3d/navigation_mesh_generator.cpp            |  4 ++++
  ...openxr_fb_display_refresh_rate_extension.cpp |  4 ++++
  platform/web/api/api.cpp                        |  6 +++++-
+ scene/debugger/view_3d_controller.cpp           | 10 ++++++++++
  scene/gui/file_dialog.cpp                       |  5 ++++-
+ scene/gui/view_panner.cpp                       |  2 ++
  scene/resources/resource_format_text.cpp        |  6 ++++++
  scene/resources/resource_format_text.h          |  1 +
  servers/audio/audio_driver_dummy.h              |  6 +++++-
@@ -35,7 +41,7 @@ idle callbacks, navigation server managers) are reset or de-duplicated.
  servers/rendering/rendering_server_default.cpp  | 17 +++++++++++++++++
  servers/rendering/shader_types.cpp              |  6 ++++++
  servers/rendering/shader_types.h                |  1 +
- 25 files changed, 101 insertions(+), 5 deletions(-)
+ 27 files changed, 113 insertions(+), 5 deletions(-)
 
 diff --git a/drivers/gles3/rasterizer_gles3.cpp b/drivers/gles3/rasterizer_gles3.cpp
 index a4208f4..f9bb510 100644
@@ -197,6 +203,39 @@ index deb7847..7b19c11 100644
  
  void JavaScriptBridge::_bind_methods() {
  	ClassDB::bind_method(D_METHOD("eval", "code", "use_global_execution_context"), &JavaScriptBridge::eval, DEFVAL(false));
+diff --git a/scene/debugger/view_3d_controller.cpp b/scene/debugger/view_3d_controller.cpp
+index 864bed5..e428cd5 100644
+--- a/scene/debugger/view_3d_controller.cpp
++++ b/scene/debugger/view_3d_controller.cpp
+@@ -32,11 +32,14 @@
+ 
+ #include "view_3d_controller.h"
+ 
++#include "core/input/touch_gesture_recognizer.h"
++
+ #include "core/config/engine.h"
+ #include "core/input/input.h"
+ #include "core/input/shortcut.h"
+ #include "scene/main/scene_tree.h"
+ #include "scene/main/window.h"
++#include "servers/display/display_server.h"
+ 
+ using namespace View3DControllerConsts;
+ 
+@@ -266,6 +269,13 @@ bool View3DController::gui_input(const Ref<InputEvent> &p_event, const Rect2 &p_
+ 			}
+ 		}
+ 
++		if (nav_mode == NAV_MODE_NONE && Input::get_singleton()->is_emulating_mouse_from_touch() && DisplayServer::get_singleton()->is_touchscreen_available()) {
++			// Two-finger drag on a touchscreen (see TouchGestureRecognizer): pan the view with the
++			// fingers, like the 2D editor and drawing apps.
++			cursor_pan(pan_gesture, -pan_gesture->get_delta() / TouchGestureRecognizer::PAN_SCALE);
++			return true;
++		}
++
+ 		switch (nav_mode) {
+ 			case NAV_MODE_PAN: {
+ 				cursor_pan(pan_gesture, -pan_gesture->get_delta());
 diff --git a/scene/gui/file_dialog.cpp b/scene/gui/file_dialog.cpp
 index eaa1c70..68422ff 100644
 --- a/scene/gui/file_dialog.cpp
@@ -220,6 +259,19 @@ index eaa1c70..68422ff 100644
  #endif
  		} break;
  		case ACCESS_RESOURCES: {
+diff --git a/scene/gui/view_panner.cpp b/scene/gui/view_panner.cpp
+index 4ed1152..477abb6 100644
+--- a/scene/gui/view_panner.cpp
++++ b/scene/gui/view_panner.cpp
+@@ -161,6 +161,8 @@ bool ViewPanner::gui_input(const Ref<InputEvent> &p_event, Rect2 p_canvas_rect)
+ 			return true;
+ 		}
+ 		pan_callback.call(-pan_gesture->get_delta() * scroll_speed, p_event);
++		// Accept the event, as for the other gestures: otherwise it is handled again further up.
++		return true;
+ 	}
+ 
+ 	Ref<InputEventScreenDrag> screen_drag = p_event;
 diff --git a/scene/resources/resource_format_text.cpp b/scene/resources/resource_format_text.cpp
 index 53eed0a..92c4e7c 100644
 --- a/scene/resources/resource_format_text.cpp
