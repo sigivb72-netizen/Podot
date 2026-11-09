@@ -175,6 +175,15 @@ func _test_asset_import() -> void:
 	check("import_texture", tex is CompressedTexture2D and tex.get_width() == 64, tex)
 	var snd = load(GEN_DIR.path_join("beep.wav"))
 	check("import_audio", snd is AudioStreamWAV and snd.get_length() > 0.4, snd.get_length() if snd else null)
+	# Audio output in the editor instance (the first engine instance of the app).
+	if snd is AudioStreamWAV:
+		var player := AudioStreamPlayer.new()
+		player.stream = snd
+		add_child(player)
+		player.play()
+		await get_tree().create_timer(0.3).timeout
+		check("editor_audio_playback", player.get_playback_position() > 0.0 or AudioServer.get_driver_name() == "Dummy", "%s, position %.3f" % [AudioServer.get_driver_name(), player.get_playback_position()])
+		player.queue_free()
 	var model = load(GEN_DIR.path_join("box.gltf")) if gerr == OK else null
 	var model_ok: bool = model is PackedScene and model.instantiate().find_child("Box*", true, false) != null
 	check("import_gltf_model", model_ok, gerr)
@@ -597,7 +606,9 @@ func _test_canvas_gestures() -> void:
 	await _wait_frames(10)
 	var t1 := cam.global_transform
 	if DisplayServer.is_touchscreen_available():
-		check("gesture_3d_two_finger_pan", not t1.origin.is_equal_approx(t0.origin) and t1.basis.is_equal_approx(t0.basis), "%s -> %s" % [t0.origin, t1.origin])
+		# Panning moves the camera without turning it (allow for the view's smoothing).
+		var same_direction: bool = t1.basis.z.dot(t0.basis.z) > 0.999
+		check("gesture_3d_two_finger_pan", not t1.origin.is_equal_approx(t0.origin) and same_direction, "%s -> %s (direction dot %.5f)" % [t0.origin, t1.origin, t1.basis.z.dot(t0.basis.z)])
 	else:
 		check("gesture_3d_two_finger_pan", true, "skipped (no touchscreen: unmodified pan gestures are left to desktop trackpads)")
 	var mag3 := InputEventMagnifyGesture.new()

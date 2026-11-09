@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Mon, 9 Nov 2026 12:40:14 +0000
+Date: Mon, 9 Nov 2026 14:34:12 +0000
 Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
 
 - Enable in-process instances in editor builds; relaunch Main in-process
@@ -35,8 +35,8 @@ Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
  platform/ios/ipados_editor_support.mm         | 155 +++++++++++
  platform/ios/main_ios.mm                      |  46 ++++
  platform/ios/os_ios.h                         |  12 +
- platform/ios/os_ios.mm                        | 127 +++++++++
- 20 files changed, 1373 insertions(+), 47 deletions(-)
+ platform/ios/os_ios.mm                        | 129 +++++++++
+ 20 files changed, 1375 insertions(+), 47 deletions(-)
  create mode 100644 drivers/apple_embedded/display_server_apple_embedded_pointer.mm
  create mode 100644 platform/ios/ios_document_picker.h
  create mode 100644 platform/ios/ios_document_picker.mm
@@ -1737,7 +1737,7 @@ index 89eeab1..dd05dab 100644
  
  #endif // IOS_ENABLED
 diff --git a/platform/ios/os_ios.mm b/platform/ios/os_ios.mm
-index 6aa35c5..ed0ee72 100644
+index 6aa35c5..b02edb0 100644
 --- a/platform/ios/os_ios.mm
 +++ b/platform/ios/os_ios.mm
 @@ -32,6 +32,16 @@
@@ -1757,7 +1757,7 @@ index 6aa35c5..ed0ee72 100644
  #ifdef IOS_ENABLED
  
  OS_IOS *OS_IOS::get_singleton() {
-@@ -49,4 +59,121 @@ String OS_IOS::get_name() const {
+@@ -49,4 +59,123 @@ String OS_IOS::get_name() const {
  	return "iOS";
  }
  
@@ -1815,7 +1815,9 @@ index 6aa35c5..ed0ee72 100644
 +	}
 +
 +	const bool was_game = is_game_session_running();
-+	if (!has_pending_in_process_instance()) {
++	// "Reload Current Project" / "Quit to Project List" queue their instance from Main::cleanup()
++	// (restart on exit), so only fall back to the project manager if nothing else will follow.
++	if (!has_pending_in_process_instance() && !is_restart_on_exit_set()) {
 +		// iOS apps don't quit by themselves: go back to the project manager instead.
 +		List<String> pm_args;
 +		pm_args.push_back("--project-manager");

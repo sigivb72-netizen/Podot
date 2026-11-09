@@ -90,7 +90,7 @@ func _finish() -> void:
 	if audio_player and AudioServer.get_driver_name() == "Dummy":
 		check("audio_stream_playing", true, "skipped: no audio device (Dummy driver)")
 	elif audio_player:
-		check("audio_stream_playing", audio_player.playing or audio_player.get_playback_position() > 0.0, audio_player.get_playback_position())
+		check("audio_stream_playing", audio_player.get_playback_position() > 0.0, "%s, position %.3f" % [AudioServer.get_driver_name(), audio_player.get_playback_position()])
 	var img := get_viewport().get_texture().get_image() if DisplayServer.get_name() != "headless" else null
 	if img:
 		check("game_viewport_rendered", img.get_width() > 0 and not img.is_invisible(), img.get_size())
