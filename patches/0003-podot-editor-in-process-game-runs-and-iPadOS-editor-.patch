@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Tue, 10 Nov 2026 12:01:13 +0000
+Date: Tue, 10 Nov 2026 12:19:13 +0000
 Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  adaptations
 
@@ -42,11 +42,12 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  editor/debugger/editor_debugger_node.h        |   1 +
  editor/docks/editor_dock_manager.cpp          |   6 +
  editor/docks/editor_dock_manager.h            |   1 +
- editor/docks/filesystem_dock.cpp              |   6 +-
+ editor/docks/filesystem_dock.cpp              |  46 +++-
+ editor/docks/filesystem_dock.h                |   6 +
  editor/editor_interface.cpp                   |   6 +
  editor/editor_interface.h                     |   1 +
- editor/editor_node.cpp                        | 212 ++++++++++++++++--
- editor/editor_node.h                          |  17 +-
+ editor/editor_node.cpp                        | 220 ++++++++++++++++--
+ editor/editor_node.h                          |  19 +-
  editor/editor_undo_redo_manager.cpp           |   4 +
  editor/export/editor_export.cpp               |   6 +
  editor/export/editor_export.h                 |   1 +
@@ -104,7 +105,7 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  editor/shader/shader_file_editor_plugin.cpp   |   6 +
  editor/shader/shader_file_editor_plugin.h     |   1 +
  .../version_control_editor_plugin.cpp         |   4 +
- 80 files changed, 783 insertions(+), 47 deletions(-)
+ 81 files changed, 839 insertions(+), 47 deletions(-)
  create mode 100644 editor/project_manager/project_device_limits.cpp
  create mode 100644 editor/project_manager/project_device_limits.h
 
@@ -353,10 +354,66 @@ index caf7277..91e1147 100644
  
  class DockSlotGrid : public Control {
 diff --git a/editor/docks/filesystem_dock.cpp b/editor/docks/filesystem_dock.cpp
-index 232fc24..e406526 100644
+index 232fc24..64235af 100644
 --- a/editor/docks/filesystem_dock.cpp
 +++ b/editor/docks/filesystem_dock.cpp
-@@ -3650,7 +3650,7 @@ void FileSystemDock::_file_and_folders_fill_popup(PopupMenu *p_popup, const Vect
+@@ -53,6 +53,7 @@
+ #include "editor/gui/create_dialog.h"
+ #include "editor/gui/directory_create_dialog.h"
+ #include "editor/gui/editor_dir_dialog.h"
++#include "editor/gui/editor_toaster.h"
+ #include "editor/import/3d/scene_import_settings.h"
+ #include "editor/inspector/editor_context_menu_plugin.h"
+ #include "editor/inspector/editor_resource_preview.h"
+@@ -71,6 +72,7 @@
+ #include "scene/gui/item_list.h"
+ #include "scene/gui/label.h"
+ #include "scene/gui/line_edit.h"
++#include "scene/gui/menu_button.h"
+ #include "scene/gui/progress_bar.h"
+ #include "scene/resources/packed_scene.h"
+ #include "servers/display/display_server.h"
+@@ -498,6 +500,10 @@ void FileSystemDock::_update_display_mode(bool p_force) {
+ 		selected_paths = get_selected_paths();
+ 	}
+ 
++#ifdef IOS_ENABLED
++	button_import_external->set_button_icon(get_editor_theme_icon(SNAME("Load")));
++#endif
++
+ 	switch (display_mode) {
+ 		case DISPLAY_MODE_TREE_ONLY: {
+ 			button_toggle_display_mode->set_button_icon(get_editor_theme_icon(SNAME("Panels1")));
+@@ -2244,6 +2250,28 @@ void FileSystemDock::_generic_rmb_option_selected(int p_option) {
+ 	}
+ }
+ 
++#ifdef IOS_ENABLED
++extern void ios_import_from_files(const Callable &p_callback);
++extern void ios_import_from_photos(const Callable &p_callback);
++
++void FileSystemDock::_import_external_option(int p_option) {
++	const Callable done = callable_mp(this, &FileSystemDock::_import_external_done);
++	if (p_option == 0) {
++		ios_import_from_files(done);
++	} else {
++		ios_import_from_photos(done);
++	}
++}
++
++void FileSystemDock::_import_external_done(const PackedStringArray &p_files) {
++	if (p_files.is_empty()) {
++		return;
++	}
++	EditorNode::get_singleton()->import_external_files(p_files, get_current_directory());
++	EditorToaster::get_singleton()->popup_str(vformat(TTR("Imported %d item(s) into %s"), p_files.size(), get_current_directory()));
++}
++#endif
++
+ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected) {
+ 	// The first one should be the active item.
+ 
+@@ -3650,7 +3678,7 @@ void FileSystemDock::_file_and_folders_fill_popup(PopupMenu *p_popup, const Vect
  			}
  		}
  
@@ -365,7 +422,7 @@ index 232fc24..e406526 100644
  		if (!added_separator) {
  			p_popup->add_separator();
  			added_separator = true;
-@@ -3717,7 +3717,7 @@ void FileSystemDock::_tree_empty_click(const Vector2 &p_pos, MouseButton p_butto
+@@ -3717,7 +3745,7 @@ void FileSystemDock::_tree_empty_click(const Vector2 &p_pos, MouseButton p_butto
  
  	// To keep consistency with options added to "Create New..." menu (for plugin which has slot as CONTEXT_SLOT_FILESYSTEM_CREATE).
  	EditorContextMenuPluginManager::get_singleton()->add_options_from_plugins(tree_popup, EditorContextMenuPlugin::CONTEXT_SLOT_FILESYSTEM_CREATE, Vector<String>(), 500);
@@ -374,7 +431,7 @@ index 232fc24..e406526 100644
  	// Opening the system file manager is not supported on the Android and web editors.
  	tree_popup->add_separator();
  	tree_popup->add_icon_shortcut(get_editor_theme_icon(SNAME("Terminal")), ED_GET_SHORTCUT("filesystem_dock/open_in_terminal"), FILE_MENU_OPEN_IN_TERMINAL);
-@@ -4448,7 +4448,7 @@ FileSystemDock::FileSystemDock() {
+@@ -4448,7 +4476,7 @@ FileSystemDock::FileSystemDock() {
  	ED_SHORTCUT("filesystem_dock/new_textfile", TTRC("New TextFile..."), Key::NONE);
  	ED_SHORTCUT("filesystem_dock/rename", TTRC("Rename..."), Key::F2);
  	ED_SHORTCUT_OVERRIDE("filesystem_dock/rename", "macos", Key::ENTER);
@@ -383,6 +440,42 @@ index 232fc24..e406526 100644
  	// Opening the system file manager or opening in an external program is not supported on the Android and web editors.
  	ED_SHORTCUT("filesystem_dock/show_in_explorer", TTRC("Open in File Manager"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::R);
  	ED_SHORTCUT("filesystem_dock/open_in_external_program", TTRC("Open in External Program"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::ALT | Key::E);
+@@ -4516,6 +4544,18 @@ FileSystemDock::FileSystemDock() {
+ 	button_toggle_display_mode->set_theme_type_variation("FlatMenuButton");
+ 	toolbar_hbc->add_child(button_toggle_display_mode);
+ 
++#ifdef IOS_ENABLED
++	button_import_external = memnew(MenuButton);
++	button_import_external->set_flat(false);
++	button_import_external->set_theme_type_variation("FlatMenuButton");
++	button_import_external->set_tooltip_text(TTRC("Import files into the current folder"));
++	button_import_external->set_accessibility_name(TTRC("Import"));
++	button_import_external->get_popup()->add_item(TTRC("Import from Files..."), 0);
++	button_import_external->get_popup()->add_item(TTRC("Import from Photos..."), 1);
++	button_import_external->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &FileSystemDock::_import_external_option));
++	toolbar_hbc->add_child(button_import_external);
++#endif
++
+ 	toolbar2_hbc = memnew(HBoxContainer);
+ 	top_vbc->add_child(toolbar2_hbc);
+ 
+diff --git a/editor/docks/filesystem_dock.h b/editor/docks/filesystem_dock.h
+index bc687e4..519c184 100644
+--- a/editor/docks/filesystem_dock.h
++++ b/editor/docks/filesystem_dock.h
+@@ -164,6 +164,12 @@ private:
+ 	HashSet<String> favorites;
+ 
+ 	Button *button_toggle_display_mode = nullptr;
++#ifdef IOS_ENABLED
++	// iPadOS: bring files in from the Files app or the photo library without leaving the editor.
++	MenuButton *button_import_external = nullptr;
++	void _import_external_option(int p_option);
++	void _import_external_done(const PackedStringArray &p_files);
++#endif
+ 	Button *button_file_list_display_mode = nullptr;
+ 	Button *button_hist_next = nullptr;
+ 	Button *button_hist_prev = nullptr;
 diff --git a/editor/editor_interface.cpp b/editor/editor_interface.cpp
 index dcb1c61..0234c79 100644
 --- a/editor/editor_interface.cpp
@@ -408,7 +501,7 @@ index 9bb588f..26535d0 100644
 +	~EditorInterface();
  };
 diff --git a/editor/editor_node.cpp b/editor/editor_node.cpp
-index 5bc4649..8ae62e6 100644
+index 5bc4649..d8f4458 100644
 --- a/editor/editor_node.cpp
 +++ b/editor/editor_node.cpp
 @@ -201,7 +201,7 @@
@@ -615,7 +708,22 @@ index 5bc4649..8ae62e6 100644
  void EditorNode::_scene_tab_closed(int p_tab) {
  	current_menu_option = SCENE_TAB_CLOSE;
  	tab_closing_idx = p_tab;
-@@ -7849,6 +7996,14 @@ void EditorNode::_resource_loaded(Ref<Resource> p_resource, const String &p_path
+@@ -7050,6 +7197,14 @@ void EditorNode::_dropped_files(const Vector<String> &p_files) {
+ 	EditorFileSystem::get_singleton()->scan_changes();
+ }
+ 
++void EditorNode::import_external_files(const Vector<String> &p_files, const String &p_to_dir) {
++	if (p_files.is_empty()) {
++		return;
++	}
++	_add_dropped_files_recursive(p_files, ProjectSettings::get_singleton()->globalize_path(p_to_dir));
++	EditorFileSystem::get_singleton()->scan_changes();
++}
++
+ void EditorNode::_add_dropped_files_recursive(const Vector<String> &p_files, String to_path) {
+ 	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+ 	ERR_FAIL_COND(dir.is_null());
+@@ -7849,6 +8004,14 @@ void EditorNode::_resource_loaded(Ref<Resource> p_resource, const String &p_path
  
  void EditorNode::_feature_profile_changed() {
  	Ref<EditorFeatureProfile> profile = feature_profile_manager->get_current_profile();
@@ -630,7 +738,7 @@ index 5bc4649..8ae62e6 100644
  	if (profile.is_valid()) {
  		editor_dock_manager->set_dock_enabled(SignalsDock::get_singleton(), !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_SIGNALS_DOCK));
  		editor_dock_manager->set_dock_enabled(GroupsDock::get_singleton(), !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_GROUPS_DOCK));
-@@ -7860,11 +8015,11 @@ void EditorNode::_feature_profile_changed() {
+@@ -7860,11 +8023,11 @@ void EditorNode::_feature_profile_changed() {
  
  		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_3D, !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_3D));
  		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_SCRIPT, !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_SCRIPT));
@@ -644,7 +752,7 @@ index 5bc4649..8ae62e6 100644
  		}
  	} else {
  		editor_dock_manager->set_dock_enabled(ImportDock::get_singleton(), true);
-@@ -7874,11 +8029,11 @@ void EditorNode::_feature_profile_changed() {
+@@ -7874,11 +8037,11 @@ void EditorNode::_feature_profile_changed() {
  		editor_dock_manager->set_dock_enabled(history_dock, true);
  		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_3D, true);
  		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_SCRIPT, true);
@@ -658,7 +766,7 @@ index 5bc4649..8ae62e6 100644
  		}
  	}
  
-@@ -8075,7 +8230,7 @@ void EditorNode::_build_project_menu() {
+@@ -8075,7 +8238,7 @@ void EditorNode::_build_project_menu() {
  	project_menu->add_shortcut(ED_GET_SHORTCUT("editor/export"), PROJECT_EXPORT);
  	project_menu->add_item(TTRC("Pack Project as ZIP..."), PROJECT_PACK_AS_ZIP);
  	project_menu->add_item(TTRC("Install Android Build Template..."), PROJECT_INSTALL_ANDROID_SOURCE);
@@ -667,7 +775,7 @@ index 5bc4649..8ae62e6 100644
  	project_menu->add_item(TTRC("Open User Data Folder"), PROJECT_OPEN_USER_DATA_FOLDER);
  #endif
  	project_menu->add_separator();
-@@ -8126,7 +8281,7 @@ void EditorNode::_build_settings_menu() {
+@@ -8126,7 +8289,7 @@ void EditorNode::_build_settings_menu() {
  	settings_menu->add_shortcut(ED_GET_SHORTCUT("editor/fullscreen_mode"), EDITOR_TOGGLE_FULLSCREEN);
  	settings_menu->add_separator();
  
@@ -676,7 +784,7 @@ index 5bc4649..8ae62e6 100644
  	if (EditorPaths::get_singleton()->get_data_dir() == EditorPaths::get_singleton()->get_config_dir()) {
  		// Configuration and data folders are located in the same place.
  		settings_menu->add_item(TTRC("Open Editor Data/Settings Folder"), EDITOR_OPEN_DATA_FOLDER);
-@@ -8140,7 +8295,7 @@ void EditorNode::_build_settings_menu() {
+@@ -8140,7 +8303,7 @@ void EditorNode::_build_settings_menu() {
  
  	settings_menu->add_item(TTRC("Manage Editor Features..."), EDITOR_MANAGE_FEATURE_PROFILES);
  	settings_menu->add_item(TTRC("Manage Export Templates..."), EDITOR_MANAGE_EXPORT_TEMPLATES);
@@ -685,7 +793,7 @@ index 5bc4649..8ae62e6 100644
  	settings_menu->add_item(TTRC("Configure FBX Importer..."), EDITOR_CONFIGURE_FBX_IMPORTER);
  #endif
  }
-@@ -8250,7 +8405,7 @@ void EditorNode::_update_main_menu_type() {
+@@ -8250,7 +8413,7 @@ void EditorNode::_update_main_menu_type() {
  			}
  		}
  
@@ -694,7 +802,7 @@ index 5bc4649..8ae62e6 100644
  		// Align main menu icon visually with TouchActionsPanel buttons.
  		menu_btn_spacer = memnew(Control);
  		menu_btn_spacer->set_custom_minimum_size(Vector2(8, 0) * EDSCALE);
-@@ -8292,7 +8447,7 @@ void EditorNode::_bottom_panel_resized() {
+@@ -8292,7 +8455,7 @@ void EditorNode::_bottom_panel_resized() {
  	bottom_panel->set_bottom_panel_offset(center_split->get_split_offset());
  }
  
@@ -703,7 +811,7 @@ index 5bc4649..8ae62e6 100644
  void EditorNode::_touch_actions_panel_mode_changed() {
  	int panel_mode = EDITOR_GET("interface/touchscreen/touch_actions_panel");
  	switch (panel_mode) {
-@@ -8672,7 +8827,7 @@ EditorNode::EditorNode() {
+@@ -8672,7 +8835,7 @@ EditorNode::EditorNode() {
  
  	main_vbox = memnew(VBoxContainer);
  
@@ -712,7 +820,7 @@ index 5bc4649..8ae62e6 100644
  	base_vbox = memnew(VBoxContainer);
  	base_vbox->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT, Control::PRESET_MODE_MINSIZE, theme->get_constant(SNAME("window_border_margin"), EditorStringName(Editor)));
  
-@@ -8916,7 +9071,7 @@ EditorNode::EditorNode() {
+@@ -8916,7 +9079,7 @@ EditorNode::EditorNode() {
  	gui_base->add_child(about);
  	feature_profile_manager->connect("current_feature_profile_changed", callable_mp(this, &EditorNode::_feature_profile_changed));
  
@@ -721,7 +829,7 @@ index 5bc4649..8ae62e6 100644
  	fbx_importer_manager = memnew(FBXImporterManager);
  	gui_base->add_child(fbx_importer_manager);
  #endif
-@@ -9392,9 +9547,13 @@ EditorNode::EditorNode() {
+@@ -9392,9 +9555,13 @@ EditorNode::EditorNode() {
  	add_editor_plugin(memnew(Node3DEditorPlugin));
  	add_editor_plugin(memnew(ScriptEditorPlugin));
  
@@ -735,7 +843,7 @@ index 5bc4649..8ae62e6 100644
  
  	EditorAudioBuses *audio_bus_editor = EditorAudioBuses::register_editor();
  
-@@ -9660,5 +9819,30 @@ EditorNode::~EditorNode() {
+@@ -9660,5 +9827,30 @@ EditorNode::~EditorNode() {
  
  	file_dialogs.clear();
  
@@ -767,7 +875,7 @@ index 5bc4649..8ae62e6 100644
  	singleton = nullptr;
  }
 diff --git a/editor/editor_node.h b/editor/editor_node.h
-index f683e13..df63ac1 100644
+index f683e13..9974264 100644
 --- a/editor/editor_node.h
 +++ b/editor/editor_node.h
 @@ -104,7 +104,7 @@ class ProjectSettingsEditor;
@@ -801,10 +909,12 @@ index f683e13..df63ac1 100644
  	static void add_build_callback(EditorBuildCallback p_callback);
  
  	static bool immediate_confirmation_dialog(const String &p_text, const String &p_ok_text = TTR("Ok"), const String &p_cancel_text = TTR("Cancel"), uint32_t p_wrap_width = 0);
-@@ -1020,6 +1024,13 @@ public:
+@@ -1020,6 +1024,15 @@ public:
  	void save_before_run();
  	void try_autosave();
  	void restart_editor(bool p_goto_project_manager = false);
++	// Copies external files/folders into a project folder and imports them (as when dropping files).
++	void import_external_files(const Vector<String> &p_files, const String &p_to_dir);
 +	uint64_t last_memory_warning_msec = 0;
 +
 +	// In-process game execution, used when the platform cannot spawn processes (iPadOS editor):

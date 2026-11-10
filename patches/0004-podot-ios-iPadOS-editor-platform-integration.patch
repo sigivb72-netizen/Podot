@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Tue, 10 Nov 2026 12:01:13 +0000
+Date: Tue, 10 Nov 2026 12:19:13 +0000
 Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
 
 - Enable in-process instances in editor builds; relaunch Main in-process
@@ -16,40 +16,45 @@ Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
 - Native file dialogs (UIDocumentPickerViewController) with persisted
   security-scoped bookmarks; Files app integration.
 ---
- .../display_server_apple_embedded.h           |  40 ++-
- .../display_server_apple_embedded.mm          |  83 +++++-
- .../display_server_apple_embedded_pointer.mm  | 180 +++++++++++++
+ .../display_server_apple_embedded.h           |  43 ++-
+ .../display_server_apple_embedded.mm          |  91 +++++-
+ .../display_server_apple_embedded_pointer.mm  | 180 ++++++++++
  .../godot_view_apple_embedded.h               |   6 +
- .../godot_view_apple_embedded.mm              | 246 +++++++++++++++++-
- .../apple_embedded/godot_view_controller.mm   | 124 ++++++---
+ .../godot_view_apple_embedded.mm              | 246 +++++++++++++-
+ .../apple_embedded/godot_view_controller.mm   | 124 +++++--
  drivers/apple_embedded/godot_view_renderer.h  |   2 +
  drivers/apple_embedded/godot_view_renderer.mm |  17 +-
  drivers/apple_embedded/os_apple_embedded.h    |  19 ++
- drivers/apple_embedded/os_apple_embedded.mm   |  36 +++
- platform/ios/SCsub                            |   3 +
+ drivers/apple_embedded/os_apple_embedded.mm   |  36 ++
+ platform/ios/SCsub                            |   4 +
  platform/ios/detect.py                        |   7 +-
  platform/ios/display_server_ios.h             |   3 +
  platform/ios/display_server_ios.mm            |  22 ++
- platform/ios/ios_crash_reporter.h             |  45 ++++
- platform/ios/ios_crash_reporter.mm            | 201 ++++++++++++++
- platform/ios/ios_document_picker.h            |  47 ++++
- platform/ios/ios_document_picker.mm           | 206 +++++++++++++++
- platform/ios/ipados_editor_support.h          |  53 ++++
- platform/ios/ipados_editor_support.mm         | 155 +++++++++++
- platform/ios/main_ios.mm                      |  51 ++++
+ platform/ios/godot_view_ios.mm                |   3 +
+ platform/ios/ios_crash_reporter.h             |  45 +++
+ platform/ios/ios_crash_reporter.mm            | 201 ++++++++++++
+ platform/ios/ios_document_picker.h            |  47 +++
+ platform/ios/ios_document_picker.mm           | 206 ++++++++++++
+ platform/ios/ios_file_import.h                |  44 +++
+ platform/ios/ios_file_import.mm               | 308 ++++++++++++++++++
+ platform/ios/ipados_editor_support.h          |  53 +++
+ platform/ios/ipados_editor_support.mm         | 155 +++++++++
+ platform/ios/main_ios.mm                      |  51 +++
  platform/ios/os_ios.h                         |  13 +
- platform/ios/os_ios.mm                        | 144 ++++++++++
- 23 files changed, 1655 insertions(+), 48 deletions(-)
+ platform/ios/os_ios.mm                        | 144 ++++++++
+ 26 files changed, 2021 insertions(+), 49 deletions(-)
  create mode 100644 drivers/apple_embedded/display_server_apple_embedded_pointer.mm
  create mode 100644 platform/ios/ios_crash_reporter.h
  create mode 100644 platform/ios/ios_crash_reporter.mm
  create mode 100644 platform/ios/ios_document_picker.h
  create mode 100644 platform/ios/ios_document_picker.mm
+ create mode 100644 platform/ios/ios_file_import.h
+ create mode 100644 platform/ios/ios_file_import.mm
  create mode 100644 platform/ios/ipados_editor_support.h
  create mode 100644 platform/ios/ipados_editor_support.mm
 
 diff --git a/drivers/apple_embedded/display_server_apple_embedded.h b/drivers/apple_embedded/display_server_apple_embedded.h
-index f8efc73..c176a87 100644
+index f8efc73..c668219 100644
 --- a/drivers/apple_embedded/display_server_apple_embedded.h
 +++ b/drivers/apple_embedded/display_server_apple_embedded.h
 @@ -30,6 +30,7 @@
@@ -68,7 +73,13 @@ index f8efc73..c176a87 100644
  class NativeMenu;
  
  /// "Embedded" as in "Embedded Device".
-@@ -85,6 +87,24 @@ class DisplayServerAppleEmbedded : public DisplayServer {
+@@ -80,11 +82,30 @@ class DisplayServerAppleEmbedded : public DisplayServer {
+ 	Callable window_resize_callback;
+ 	Callable input_event_callback;
+ 	Callable input_text_callback;
++	Callable drop_files_callback;
+ 
+ 	Callable system_theme_changed;
  
  	int virtual_keyboard_height = 0;
  
@@ -93,7 +104,7 @@ index f8efc73..c176a87 100644
  	void perform_event(const Ref<InputEvent> &p_event);
  
  	void initialize_tts() const;
-@@ -135,9 +155,27 @@ public:
+@@ -135,9 +156,29 @@ public:
  	void touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt);
  	void touches_canceled(int p_idx);
  
@@ -108,6 +119,8 @@ index f8efc73..c176a87 100644
 +	void pointer_scroll(const Point2 &p_position, const Vector2 &p_delta, NSInteger p_modifier);
 +	void pointer_magnify(const Point2 &p_position, float p_factor, NSInteger p_modifier);
 +	void hardware_keyboard_connection_changed(bool p_connected);
++	// Files dragged in from other apps or picked for import (already copied to a temporary folder).
++	void send_dropped_files(const Vector<String> &p_files);
 +
 +	virtual Point2i mouse_get_position() const override;
 +	virtual BitField<MouseButtonMask> mouse_get_button_state() const override;
@@ -123,7 +136,7 @@ index f8efc73..c176a87 100644
  
  	// MARK: Motion
 diff --git a/drivers/apple_embedded/display_server_apple_embedded.mm b/drivers/apple_embedded/display_server_apple_embedded.mm
-index fc116e4..3aa881f 100644
+index fc116e4..2e766c1 100644
 --- a/drivers/apple_embedded/display_server_apple_embedded.mm
 +++ b/drivers/apple_embedded/display_server_apple_embedded.mm
 @@ -30,6 +30,7 @@
@@ -161,7 +174,18 @@ index fc116e4..3aa881f 100644
  	if (native_menu) {
  		memdelete(native_menu);
  		native_menu = nullptr;
-@@ -240,6 +254,8 @@ void DisplayServerAppleEmbedded::window_set_drop_files_callback(const Callable &
+@@ -236,10 +250,18 @@ void DisplayServerAppleEmbedded::window_set_input_text_callback(const Callable &
+ }
+ 
+ void DisplayServerAppleEmbedded::window_set_drop_files_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window) {
+-	// Probably not supported for iOS
++	drop_files_callback = p_callable;
++}
++
++void DisplayServerAppleEmbedded::send_dropped_files(const Vector<String> &p_files) {
++	if (drop_files_callback.is_valid() && !p_files.is_empty()) {
++		drop_files_callback.call(p_files);
++	}
  }
  
  void DisplayServerAppleEmbedded::process_events() {
@@ -170,7 +194,7 @@ index fc116e4..3aa881f 100644
  	Input::get_singleton()->flush_buffered_events();
  }
  
-@@ -269,15 +285,51 @@ void DisplayServerAppleEmbedded::_window_callback(const Callable &p_callable, co
+@@ -269,15 +291,51 @@ void DisplayServerAppleEmbedded::_window_callback(const Callable &p_callable, co
  
  // MARK: Touches
  
@@ -230,7 +254,7 @@ index fc116e4..3aa881f 100644
  }
  
  void DisplayServerAppleEmbedded::touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt) {
-@@ -289,7 +341,8 @@ void DisplayServerAppleEmbedded::touch_drag(int p_idx, int p_prev_x, int p_prev_
+@@ -289,7 +347,8 @@ void DisplayServerAppleEmbedded::touch_drag(int p_idx, int p_prev_x, int p_prev_
  	ev->set_position(Vector2(p_x, p_y));
  	ev->set_relative(Vector2(p_x - p_prev_x, p_y - p_prev_y));
  	ev->set_relative_screen_position(ev->get_relative());
@@ -240,7 +264,7 @@ index fc116e4..3aa881f 100644
  }
  
  void DisplayServerAppleEmbedded::perform_event(const Ref<InputEvent> &p_event) {
-@@ -302,15 +355,16 @@ void DisplayServerAppleEmbedded::perform_event(const Ref<InputEvent> &p_event) {
+@@ -302,15 +361,16 @@ void DisplayServerAppleEmbedded::perform_event(const Ref<InputEvent> &p_event) {
  }
  
  void DisplayServerAppleEmbedded::touches_canceled(int p_idx) {
@@ -260,7 +284,7 @@ index fc116e4..3aa881f 100644
  	ev->set_pressed(p_pressed);
  	ev->set_keycode(fix_keycode(p_char, p_key));
  	if (@available(iOS 13.4, *)) {
-@@ -375,6 +429,11 @@ bool DisplayServerAppleEmbedded::has_feature(DisplayServerEnums::Feature p_featu
+@@ -375,6 +435,11 @@ bool DisplayServerAppleEmbedded::has_feature(DisplayServerEnums::Feature p_featu
  		// case DisplayServerEnums::FEATURE_NATIVE_DIALOG_FILE_MIME:
  		// case DisplayServerEnums::FEATURE_NATIVE_ICON:
  		// case DisplayServerEnums::FEATURE_WINDOW_TRANSPARENCY:
@@ -1125,15 +1149,16 @@ index 84e4821..e4f7b57 100644
  	static String ret;
  	if (ret.is_empty()) {
 diff --git a/platform/ios/SCsub b/platform/ios/SCsub
-index 92f6c17..9bf56c5 100644
+index 92f6c17..91554d2 100644
 --- a/platform/ios/SCsub
 +++ b/platform/ios/SCsub
-@@ -12,6 +12,9 @@ ios_lib = [
+@@ -12,6 +12,10 @@ ios_lib = [
      "display_layer_ios.mm",
      "display_server_ios.mm",
      "godot_view_ios.mm",
 +    "ios_crash_reporter.mm",
 +    "ios_document_picker.mm",
++    "ios_file_import.mm",
 +    "ipados_editor_support.mm",
      "main_ios.mm",
      "os_ios.mm",
@@ -1217,6 +1242,27 @@ index ee86f71..006f2f2 100644
  }
  
  DisplayServerIOS::~DisplayServerIOS() {
+diff --git a/platform/ios/godot_view_ios.mm b/platform/ios/godot_view_ios.mm
+index 2de4ec3..a8ebe5f 100644
+--- a/platform/ios/godot_view_ios.mm
++++ b/platform/ios/godot_view_ios.mm
+@@ -31,6 +31,7 @@
+ #import "godot_view_ios.h"
+ 
+ #import "display_layer_ios.h"
++#import "ios_file_import.h"
+ 
+ #include "core/config/project_settings.h"
+ #include "core/error/error_macros.h"
+@@ -87,6 +88,8 @@ GODOT_CLANG_WARNING_POP
+ 
+ GDTView *GDTViewCreate() {
+ 	GDTViewIOS *view = [GDTViewIOS new];
++	// Accept files, photos and folders dragged from other apps (Split View, Slide Over, ...).
++	ios_file_import_enable_drop(view);
+ 	if (GLOBAL_GET("display/window/ios/allow_high_refresh_rate")) {
+ 		view.preferredFrameRate = 120;
+ 	} else {
 diff --git a/platform/ios/ios_crash_reporter.h b/platform/ios/ios_crash_reporter.h
 new file mode 100644
 index 0000000..8283105
@@ -1739,6 +1785,370 @@ index 0000000..d651315
 +		return OK;
 +	}
 +	return ERR_UNAVAILABLE;
++}
+diff --git a/platform/ios/ios_file_import.h b/platform/ios/ios_file_import.h
+new file mode 100644
+index 0000000..cff0430
+--- /dev/null
++++ b/platform/ios/ios_file_import.h
+@@ -0,0 +1,44 @@
++/**************************************************************************/
++/*  ios_file_import.h                                                     */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#pragma once
++
++#include "core/variant/callable.h"
++
++#ifdef __OBJC__
++@class UIView;
++// Lets other apps drag files, photos and folders into the view (delivered as dropped files).
++void ios_file_import_enable_drop(UIView *p_view);
++#endif
++
++// System pickers that copy the chosen items into a temporary folder and call `p_callback` with a
++// PackedStringArray of the copies' paths (empty if canceled). Photos are delivered as JPEG/PNG.
++void ios_import_from_files(const Callable &p_callback);
++void ios_import_from_photos(const Callable &p_callback);
+diff --git a/platform/ios/ios_file_import.mm b/platform/ios/ios_file_import.mm
+new file mode 100644
+index 0000000..8154716
+--- /dev/null
++++ b/platform/ios/ios_file_import.mm
+@@ -0,0 +1,308 @@
++/**************************************************************************/
++/*  ios_file_import.mm                                                    */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#import "ios_file_import.h"
++
++#include "core/variant/variant.h"
++#import "drivers/apple_embedded/app_delegate_service.h"
++#import "drivers/apple_embedded/display_server_apple_embedded.h"
++#import "drivers/apple_embedded/godot_view_controller.h"
++
++#import <PhotosUI/PhotosUI.h>
++#import <UIKit/UIKit.h>
++#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
++
++// Copies of imported items live here until the editor has copied them into the project.
++static NSURL *_new_import_dir() {
++	NSURL *base = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:@"podot_import" isDirectory:YES];
++	NSURL *dir = [base URLByAppendingPathComponent:[NSUUID UUID].UUIDString isDirectory:YES];
++	[[NSFileManager defaultManager] createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];
++	return dir;
++}
++
++static void _clear_old_imports() {
++	NSURL *base = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:@"podot_import" isDirectory:YES];
++	[[NSFileManager defaultManager] removeItemAtURL:base error:nil];
++}
++
++static NSURL *_unique_destination(NSURL *p_dir, NSString *p_name) {
++	NSURL *dest = [p_dir URLByAppendingPathComponent:p_name];
++	int n = 2;
++	while ([[NSFileManager defaultManager] fileExistsAtPath:dest.path]) {
++		NSString *name = [NSString stringWithFormat:@"%@_%d", p_name.stringByDeletingPathExtension, n++];
++		if (p_name.pathExtension.length) {
++			name = [name stringByAppendingPathExtension:p_name.pathExtension];
++		}
++		dest = [p_dir URLByAppendingPathComponent:name];
++	}
++	return dest;
++}
++
++static NSString *_copy_into(NSURL *p_source, NSURL *p_dir, NSString *p_name) {
++	NSURL *dest = _unique_destination(p_dir, p_name.length ? p_name : p_source.lastPathComponent);
++	NSError *error = nil;
++	if ([[NSFileManager defaultManager] copyItemAtURL:p_source toURL:dest error:&error]) {
++		return dest.path;
++	}
++	NSLog(@"[Podot] import: could not copy %@: %@", p_source.lastPathComponent, error.localizedDescription);
++	return nil;
++}
++
++// Loads the items of the providers into `p_dir`, then calls `p_done` on the main thread with the paths.
++static void _load_providers(NSArray<NSItemProvider *> *p_providers, NSURL *p_dir, bool p_photos, void (^p_done)(NSArray<NSString *> *)) {
++	NSMutableArray<NSString *> *paths = [NSMutableArray array];
++	dispatch_group_t group = dispatch_group_create();
++	NSObject *lock = [NSObject new];
++
++	for (NSItemProvider *provider in p_providers) {
++		NSString *type = nil;
++		if (p_photos) {
++			// Godot can't import HEIC: prefer formats it knows.
++			for (NSString *candidate in @[ UTTypeJPEG.identifier, UTTypePNG.identifier, UTTypeWebP.identifier, UTTypeMovie.identifier ]) {
++				if ([provider hasItemConformingToTypeIdentifier:candidate]) {
++					type = candidate;
++					break;
++				}
++			}
++			if (!type && [provider canLoadObjectOfClass:[UIImage class]]) {
++				dispatch_group_enter(group);
++				NSString *name = [(provider.suggestedName ?: @"photo") stringByAppendingPathExtension:@"png"];
++				[provider loadObjectOfClass:[UIImage class]
++						  completionHandler:^(UIImage *image, NSError *error) {
++							  NSData *png = image ? UIImagePNGRepresentation(image) : nil;
++							  if (png) {
++								  @synchronized(lock) {
++									  NSURL *dest = _unique_destination(p_dir, name);
++									  if ([png writeToURL:dest atomically:YES]) {
++										  [paths addObject:dest.path];
++									  }
++								  }
++							  }
++							  dispatch_group_leave(group);
++						  }];
++				continue;
++			}
++		}
++		if (!type) {
++			// Folders first (their file representation is the folder itself), then the most specific type.
++			if ([provider hasItemConformingToTypeIdentifier:UTTypeFolder.identifier]) {
++				type = UTTypeFolder.identifier;
++			} else {
++				type = provider.registeredTypeIdentifiers.firstObject;
++			}
++		}
++		if (!type) {
++			continue;
++		}
++		dispatch_group_enter(group);
++		NSString *suggested = provider.suggestedName;
++		[provider loadFileRepresentationForTypeIdentifier:type
++										completionHandler:^(NSURL *url, NSError *error) {
++											// The URL is only valid inside this block: copy it now.
++											if (url) {
++												NSString *name = url.lastPathComponent;
++												if (suggested.length && url.pathExtension.length && ![name hasPrefix:suggested]) {
++													name = [suggested stringByAppendingPathExtension:url.pathExtension];
++												}
++												@synchronized(lock) {
++													NSString *copied = _copy_into(url, p_dir, name);
++													if (copied) {
++														[paths addObject:copied];
++													}
++												}
++											} else {
++												NSLog(@"[Podot] import: %@", error.localizedDescription);
++											}
++											dispatch_group_leave(group);
++										}];
++	}
++
++	dispatch_group_notify(group, dispatch_get_main_queue(), ^{
++		p_done(paths);
++	});
++}
++
++static PackedStringArray _to_godot(NSArray<NSString *> *p_paths) {
++	PackedStringArray ret;
++	for (NSString *path in p_paths) {
++		ret.push_back(String::utf8(path.UTF8String));
++	}
++	return ret;
++}
++
++// MARK: Drag and drop from other apps
++
++@interface GDTFileDropDelegate : NSObject <UIDropInteractionDelegate>
++@end
++
++@implementation GDTFileDropDelegate
++
++- (BOOL)dropInteraction:(UIDropInteraction *)interaction canHandleSession:(id<UIDropSession>)session {
++	return [session hasItemsConformingToTypeIdentifiers:@[ UTTypeItem.identifier, UTTypeFolder.identifier ]];
++}
++
++- (UIDropProposal *)dropInteraction:(UIDropInteraction *)interaction sessionDidUpdate:(id<UIDropSession>)session {
++	// Let the editor know where the drag is, so that the folder under the finger gets the files.
++	DisplayServerAppleEmbedded *ds = DisplayServerAppleEmbedded::get_singleton();
++	if (ds) {
++		CGPoint point = [session locationInView:interaction.view];
++		const CGFloat scale = interaction.view.contentScaleFactor;
++		ds->pointer_motion(Point2(point.x * scale, point.y * scale), 0.0, Vector2(), false, 0);
++	}
++	return [[UIDropProposal alloc] initWithDropOperation:UIDropOperationCopy];
++}
++
++- (void)dropInteraction:(UIDropInteraction *)interaction performDrop:(id<UIDropSession>)session {
++	NSMutableArray<NSItemProvider *> *providers = [NSMutableArray array];
++	for (UIDragItem *item in session.items) {
++		[providers addObject:item.itemProvider];
++	}
++	CGPoint point = [session locationInView:interaction.view];
++	const CGFloat scale = interaction.view.contentScaleFactor;
++	const Point2 position(point.x * scale, point.y * scale);
++
++	_clear_old_imports();
++	// Photos dragged from the Photos app are HEIC by default: use the photo conversion for images.
++	bool photos = true;
++	for (NSItemProvider *provider in providers) {
++		if (![provider hasItemConformingToTypeIdentifier:UTTypeImage.identifier] && ![provider hasItemConformingToTypeIdentifier:UTTypeMovie.identifier]) {
++			photos = false;
++		}
++	}
++	_load_providers(providers, _new_import_dir(), photos, ^(NSArray<NSString *> *paths) {
++		DisplayServerAppleEmbedded *ds = DisplayServerAppleEmbedded::get_singleton();
++		if (ds && paths.count > 0) {
++			ds->pointer_motion(position, 0.0, Vector2(), false, 0);
++			ds->send_dropped_files(_to_godot(paths));
++		}
++	});
++}
++
++@end
++
++static GDTFileDropDelegate *gdt_drop_delegate = nil;
++
++void ios_file_import_enable_drop(UIView *p_view) {
++	if (!gdt_drop_delegate) {
++		gdt_drop_delegate = [[GDTFileDropDelegate alloc] init];
++	}
++	[p_view addInteraction:[[UIDropInteraction alloc] initWithDelegate:gdt_drop_delegate]];
++}
++
++// MARK: Pickers
++
++@interface GDTImportPickerDelegate : NSObject <UIDocumentPickerDelegate, PHPickerViewControllerDelegate> {
++@public
++	Callable callback;
++}
++@end
++
++static GDTImportPickerDelegate *gdt_import_delegate = nil;
++
++@implementation GDTImportPickerDelegate
++
++- (void)finish:(NSArray<NSString *> *)paths {
++	if (callback.is_valid()) {
++		callback.call_deferred(_to_godot(paths));
++	}
++	gdt_import_delegate = nil;
++}
++
++- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
++	// Opened "as copy": the URLs are temporary copies owned by the app.
++	NSURL *dir = _new_import_dir();
++	NSMutableArray<NSString *> *paths = [NSMutableArray array];
++	for (NSURL *url in urls) {
++		NSString *copied = _copy_into(url, dir, url.lastPathComponent);
++		if (copied) {
++			[paths addObject:copied];
++		}
++	}
++	[self finish:paths];
++}
++
++- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
++	[self finish:@[]];
++}
++
++- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results API_AVAILABLE(ios(14.0)) {
++	[picker dismissViewControllerAnimated:YES completion:nil];
++	NSMutableArray<NSItemProvider *> *providers = [NSMutableArray array];
++	for (PHPickerResult *result in results) {
++		[providers addObject:result.itemProvider];
++	}
++	if (providers.count == 0) {
++		[self finish:@[]];
++		return;
++	}
++	_load_providers(providers, _new_import_dir(), true, ^(NSArray<NSString *> *paths) {
++		[self finish:paths];
++	});
++}
++
++@end
++
++static bool _begin_picker(const Callable &p_callback) {
++	if (gdt_import_delegate != nil || !GDTAppDelegateService.viewController) {
++		return false;
++	}
++	_clear_old_imports();
++	gdt_import_delegate = [[GDTImportPickerDelegate alloc] init];
++	gdt_import_delegate->callback = p_callback;
++	return true;
++}
++
++void ios_import_from_files(const Callable &p_callback) {
++	if (@available(iOS 14.0, *)) {
++		if (!_begin_picker(p_callback)) {
++			return;
++		}
++		UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[ UTTypeItem ] asCopy:YES];
++		picker.allowsMultipleSelection = YES;
++		picker.shouldShowFileExtensions = YES;
++		picker.delegate = gdt_import_delegate;
++		[GDTAppDelegateService.viewController presentViewController:picker animated:YES completion:nil];
++	}
++}
++
++void ios_import_from_photos(const Callable &p_callback) {
++	if (@available(iOS 14.0, *)) {
++		if (!_begin_picker(p_callback)) {
++			return;
++		}
++		PHPickerConfiguration *config = [[PHPickerConfiguration alloc] init];
++		config.selectionLimit = 0; // No limit.
++		// Ask Photos to convert HEIC/HEVC to JPEG/H.264 where it can.
++		config.preferredAssetRepresentationMode = PHPickerConfigurationAssetRepresentationModeCompatible;
++		PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:config];
++		picker.delegate = gdt_import_delegate;
++		[GDTAppDelegateService.viewController presentViewController:picker animated:YES completion:nil];
++	}
 +}
 diff --git a/platform/ios/ipados_editor_support.h b/platform/ios/ipados_editor_support.h
 new file mode 100644

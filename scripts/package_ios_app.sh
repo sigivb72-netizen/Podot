@@ -46,7 +46,7 @@ echo "import Foundation" > "$OUT/obj/link_stub.swift"
 xcrun --sdk "$SDK" clang++ -target "$TARGET" -isysroot "$SDK_PATH" -Os -c "$ROOT/app/plugins_stub.cpp" -o "$OUT/obj/plugins_stub.o"
 FRAMEWORKS=(Foundation UIKit SwiftUI QuartzCore Metal OpenGLES AVFoundation AVFAudio AudioToolbox
 	CoreAudio CoreMIDI CoreMotion CoreHaptics CoreText CoreGraphics CoreVideo CoreMedia
-	GameController UniformTypeIdentifiers Security)
+	GameController UniformTypeIdentifiers Security PhotosUI Photos)
 EXTRA_LINK=()
 # MetalFX (upscaling) is only used by the Metal renderer, which upstream disables for the Simulator.
 [ "$VARIANT" = "device" ] && EXTRA_LINK+=(-Xlinker -weak_framework -Xlinker MetalFX)
