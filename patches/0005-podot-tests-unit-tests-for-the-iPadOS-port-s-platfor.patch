@@ -1,22 +1,22 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Tue, 10 Nov 2026 12:33:15 +0000
+Date: Tue, 10 Nov 2026 21:00:39 +0000
 Subject: [PATCH 5/5] podot: tests: unit tests for the iPadOS port's
  platform-independent parts
 
 ---
- tests/podot/test_podot_ipados.cpp   | 202 ++++++++++++++++++++++++++
- tests/podot/test_touch_gestures.cpp | 210 ++++++++++++++++++++++++++++
- 2 files changed, 412 insertions(+)
+ tests/podot/test_podot_ipados.cpp   | 217 ++++++++++++++++++++++++++++
+ tests/podot/test_touch_gestures.cpp | 210 +++++++++++++++++++++++++++
+ 2 files changed, 427 insertions(+)
  create mode 100644 tests/podot/test_podot_ipados.cpp
  create mode 100644 tests/podot/test_touch_gestures.cpp
 
 diff --git a/tests/podot/test_podot_ipados.cpp b/tests/podot/test_podot_ipados.cpp
 new file mode 100644
-index 0000000..ecc92e3
+index 0000000..7f0ed11
 --- /dev/null
 +++ b/tests/podot/test_podot_ipados.cpp
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,217 @@
 +/**************************************************************************/
 +/*  test_podot_ipados.cpp                                                 */
 +/**************************************************************************/
@@ -54,6 +54,8 @@ index 0000000..ecc92e3
 +#include "core/io/logger.h"
 +#include "core/os/os.h"
 +#include "core/string/string_name.h"
++#include "servers/audio/audio_driver_dummy.h"
++#include "servers/audio/audio_server.h"
 +
 +#ifdef TOOLS_ENABLED
 +#include "core/io/dir_access.h"
@@ -138,6 +140,19 @@ index 0000000..ecc92e3
 +	CHECK(CountingLogger::alive == 1);
 +	memdelete(composite);
 +	CHECK(CountingLogger::alive == 0);
++}
++
++TEST_CASE("[Podot][Audio] Audio drivers survive repeated finish() across relaunches") {
++	// The test runner sets up an AudioServer on the Dummy driver for [Audio] tests and calls
++	// AudioServer::finish() when the test ends. Finishing it here first reproduces an in-process
++	// relaunch: AudioServer::finish() finishes every registered driver on each Main::cleanup(), also
++	// the ones the current setup didn't initialize. The Dummy driver used to free its buffer again
++	// (iPadOS: abort in AudioServer::finish when pressing Play).
++	REQUIRE(AudioServer::get_singleton() != nullptr);
++	REQUIRE(AudioDriverDummy::get_dummy_singleton() != nullptr);
++	AudioServer::get_singleton()->finish();
++	AudioServer::get_singleton()->finish();
++	CHECK(AudioDriverDummy::get_dummy_singleton() != nullptr);
 +}
 +
 +TEST_CASE("[Podot][StringName] Static names flag") {

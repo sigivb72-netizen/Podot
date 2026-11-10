@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Tue, 10 Nov 2026 12:33:14 +0000
+Date: Tue, 10 Nov 2026 21:00:38 +0000
 Subject: [PATCH 2/5] podot: servers, scene, modules: clear singletons and
  registries on teardown
 
@@ -13,6 +13,11 @@ idle callbacks, navigation server managers) are reset or de-duplicated.
 Touch gestures: ViewPanner accepts pan gestures (it handled them but
 let them propagate), and the 3D viewport pans with unmodified pan
 gestures on touchscreens (two-finger drag).
+
+Audio: the Dummy driver clears its buffer pointer in finish().
+AudioServer::finish() finishes every registered driver on each teardown,
+so a second in-process teardown freed the buffer again (abort when
+pressing Play on iPadOS).
 ---
  drivers/gles3/rasterizer_gles3.cpp              |  4 ++++
  drivers/metal/metal_objects_shared.cpp          |  4 +++-
@@ -34,6 +39,7 @@ gestures on touchscreens (two-finger drag).
  scene/gui/view_panner.cpp                       |  2 ++
  scene/resources/resource_format_text.cpp        |  6 ++++++
  scene/resources/resource_format_text.h          |  1 +
+ servers/audio/audio_driver_dummy.cpp            |  4 ++++
  servers/audio/audio_driver_dummy.h              |  6 +++++-
  servers/movie_writer/movie_writer.h             |  1 +
  servers/navigation_2d/navigation_server_2d.cpp  |  1 +
@@ -45,7 +51,7 @@ gestures on touchscreens (two-finger drag).
  servers/rendering/rendering_server_default.cpp  | 17 +++++++++++++++++
  servers/rendering/shader_types.cpp              |  6 ++++++
  servers/rendering/shader_types.h                |  1 +
- 31 files changed, 145 insertions(+), 6 deletions(-)
+ 32 files changed, 149 insertions(+), 6 deletions(-)
 
 diff --git a/drivers/gles3/rasterizer_gles3.cpp b/drivers/gles3/rasterizer_gles3.cpp
 index a4208f4..f9bb510 100644
@@ -385,6 +391,21 @@ index 106229a..a796bf4 100644
  	ResourceFormatSaverText();
 +	~ResourceFormatSaverText();
  };
+diff --git a/servers/audio/audio_driver_dummy.cpp b/servers/audio/audio_driver_dummy.cpp
+index 3d1070a..598560e 100644
+--- a/servers/audio/audio_driver_dummy.cpp
++++ b/servers/audio/audio_driver_dummy.cpp
+@@ -142,6 +142,10 @@ void AudioDriverDummy::finish() {
+ 
+ 	if (samples_in) {
+ 		memdelete_arr(samples_in);
++		// AudioServer::finish() calls finish() on every registered driver, including drivers that
++		// were not initialized by this setup. With in-process relaunches (Main::cleanup() followed
++		// by Main::setup()) a dangling pointer here was freed again on the next cleanup.
++		samples_in = nullptr;
+ 	}
+ }
+ 
 diff --git a/servers/audio/audio_driver_dummy.h b/servers/audio/audio_driver_dummy.h
 index fe292c8..c622353 100644
 --- a/servers/audio/audio_driver_dummy.h

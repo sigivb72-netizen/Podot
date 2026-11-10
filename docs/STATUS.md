@@ -15,24 +15,32 @@ iPad (10th generation) Simulator, and the editor/engine flow additionally on Lin
 | Signed, installable IPA | ❌ Not produced: no Apple signing certificate / provisioning profile was available. The CI job signs automatically when the `IOS_*` secrets are set (see README). The unsigned IPA must be re-signed before installing on an iPad. |
 | Patch series applies cleanly to upstream `4.7.2-stable` | ✅ every CI run |
 
-## iPad Simulator tests (`scripts/run_simulator_tests.sh`, iPad 10th generation, iOS 26.2)
+## iPad Simulator tests (`scripts/run_simulator_tests.sh`, iPad 10th generation)
 
-Results of CI run 8 (`f82ba5d`) unless noted. The CI Simulator renders with Apple's *software*
-OpenGL renderer, which makes the editor very slow there; timeouts were raised in run 9.
+Results of CI run 18 (`1ad5bd5`). The CI Simulator renders with Apple's *software* OpenGL
+renderer, which makes the editor very slow there.
 
 | Test | Result |
 |---|---|
 | App installs and launches; project manager runs | ✅ |
 | Project creation (empty `project.godot` initialized by the editor, `.godot/` created) | ✅ |
 | Editor quits → app stays alive and returns to the project manager (in-process relaunch on iOS) | ✅ |
-| Scene/node editing, undo/redo, duplicate, reparent, delete, signals & groups, physics, AnimationPlayer/AnimationTree, TileMapLayer, save & reload, GDScript compile/run/error reporting, project settings & input map | ✅ (e2e plugin inside the real editor on the Simulator) |
-| Suspension → `NOTIFICATION_APPLICATION_PAUSED` / focus out; resumption → `RESUMED` / focus in; app alive after resume | ✅ |
-| Save on focus loss when the app goes to the background (unsaved scene saved to disk) | ✅ |
-| Hardware keyboard key events delivered to the editor (UIPress → `InputEventKey`, 5/5 keys) | ✅ |
-| Asset import (texture, WAV, glTF) and importing an existing demo project | ❌ in run 8: the FileSystem scan did not finish within the time limits on the software renderer, and editor settings were written to the read-only app bundle (fixed in run 9: Application Support). See run 9. |
-| Typed text reaching the script editor's text field | ❌ in run 8 (keys arrived, but the text field did not have focus; test setup fixed in run 9) |
-| Touch injected through the Simulator window (`cliclick`) | ❌ no touch events arrived; most likely the CI runner does not grant the UI-scripting permission that `cliclick` needs. Touch input is therefore **not verified on iOS**; it uses upstream's unchanged touch path. |
-| Running the game in-process on iOS and returning to the editor | ⚠️ not verified on the Simulator yet (the e2e scenario did not reach the game step in run 8 because of the import timeouts above); verified on Linux (below). |
+| Scene/node editing, undo/redo, duplicate, reparent, delete, signals & groups, physics, AnimationPlayer/AnimationTree, TileMapLayer, save & reload, GDScript compile/run/error reporting, project settings & input map, 2D/3D viewport rendering | ✅ (e2e plugin inside the real editor on the Simulator) |
+| Two-finger pan and pinch zoom in the 2D and 3D viewports | ✅ |
+| Asset import (texture, WAV, glTF); importing an existing demo project (37/37 assets) | ✅ |
+| **Play: editor shuts down → game runs in the same process (physics, touch/key input, imported assets, rendering) → editor comes back with the project and scenes**; Reload Current Project | ✅ |
+| Suspension/resumption notifications, save on focus loss, app alive after resume | ✅ |
+| Touch input and hardware keyboard events | ✅ |
+| Typed text reaching the script editor's text field | ❌ (keys arrive, but the text field doesn't have focus in the test setup) |
+| Audio playback (CoreAudio) | ❌ on the CI Simulator the stream position stays at 0 (no audio device on the runner); not verified |
+| Metal renderer on the Simulator (`simulator_metal` build) | ❌ the editor starts on the Simulator's virtual GPU (Apple2 family, below Godot's requirements) but doesn't get past the first frames within the time limit. Metal does run on devices (reported by a tester on an iPad 10th gen) |
+
+## On-device reports
+
+* iPad 10th generation, iPadOS 27: project manager and editor run with Metal. Pressing Play
+  crashed with `abort` in `AudioServer::finish()` while the editor shut down to start the game: the
+  Dummy audio driver freed its buffer again on the second in-process teardown. Fixed (regression
+  test `[Podot][Audio]`); the fix awaits confirmation on the device.
 
 ## Linux tests of the shared code (`scripts/run_linux_tests.sh`)
 
@@ -81,8 +89,8 @@ iPadOS-specific (implemented; see ARCHITECTURE.md):
 * **External tools**: no terminal, external script editor, Blender importer, FBX2glTF (the built-in
   ufbx FBX importer works), or iOS export (needs Xcode). Other export platforms run their
   upstream code paths; untested.
-* **Simulator rendering**: upstream Godot does not enable Metal for the iOS Simulator, so only
-  the Compatibility renderer works there. On devices, Metal (Forward+/Mobile) is compiled in but
-  untested here.
+* **Simulator rendering**: upstream Godot does not enable Metal for the iOS Simulator; the port's
+  `simulator_metal` build does, but the CI Simulator's GPU is too weak for the editor. On devices,
+  Metal (Forward+/Mobile) runs the editor (tester report); automated tests use Compatibility.
 * **iCloud files not downloaded locally** are not fetched automatically (no `NSFileCoordinator`).
 * **Signing**: see above. The *increased memory limit* entitlement requires a profile that allows it.

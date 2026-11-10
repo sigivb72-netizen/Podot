@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Tue, 10 Nov 2026 12:33:14 +0000
+Date: Tue, 10 Nov 2026 21:00:38 +0000
 Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
 
 - Enable in-process instances in editor builds; relaunch Main in-process
@@ -15,6 +15,8 @@ Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
 - Hardware keyboard: key repeat, connection change notifications.
 - Native file dialogs (UIDocumentPickerViewController) with persisted
   security-scoped bookmarks; Files app integration.
+- CoreAudio: activate the audio session when it reports a 0 Hz sample
+  rate after a relaunch, instead of falling back to the Dummy driver.
 ---
  .../display_server_apple_embedded.h           |  43 ++-
  .../display_server_apple_embedded.mm          |  91 +++++-
@@ -26,6 +28,7 @@ Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
  drivers/apple_embedded/godot_view_renderer.mm |  33 +-
  drivers/apple_embedded/os_apple_embedded.h    |  19 ++
  drivers/apple_embedded/os_apple_embedded.mm   |  36 ++
+ drivers/coreaudio/audio_driver_coreaudio.mm   |  20 ++
  platform/ios/SCsub                            |   4 +
  platform/ios/detect.py                        |   7 +-
  platform/ios/display_server_ios.h             |   3 +
@@ -42,7 +45,7 @@ Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
  platform/ios/main_ios.mm                      |  51 +++
  platform/ios/os_ios.h                         |  13 +
  platform/ios/os_ios.mm                        | 144 ++++++++
- 26 files changed, 2036 insertions(+), 50 deletions(-)
+ 27 files changed, 2056 insertions(+), 50 deletions(-)
  create mode 100644 drivers/apple_embedded/display_server_apple_embedded_pointer.mm
  create mode 100644 platform/ios/ios_crash_reporter.h
  create mode 100644 platform/ios/ios_crash_reporter.mm
@@ -1177,6 +1180,44 @@ index 84e4821..e4f7b57 100644
  String OS_AppleEmbedded::get_temp_path() const {
  	static String ret;
  	if (ret.is_empty()) {
+diff --git a/drivers/coreaudio/audio_driver_coreaudio.mm b/drivers/coreaudio/audio_driver_coreaudio.mm
+index fbd73c8..d09f1c9 100644
+--- a/drivers/coreaudio/audio_driver_coreaudio.mm
++++ b/drivers/coreaudio/audio_driver_coreaudio.mm
+@@ -139,6 +139,16 @@ Error AudioDriverCoreAudio::init() {
+ 	ERR_FAIL_COND_V(result != noErr, FAILED);
+ #else
+ 	double hw_mix_rate = [AVAudioSession sharedInstance].sampleRate;
++	if (hw_mix_rate <= 0) {
++		// The session reports 0 Hz until it has been activated (e.g. right after the previous
++		// audio unit was disposed by an in-process relaunch). Activate it and ask again, so the
++		// engine doesn't fall back to the Dummy driver (no sound).
++		[[AVAudioSession sharedInstance] setActive:YES error:nil];
++		hw_mix_rate = [AVAudioSession sharedInstance].sampleRate;
++	}
++	if (hw_mix_rate <= 0) {
++		hw_mix_rate = _get_configured_mix_rate();
++	}
+ #endif
+ 	mix_rate = hw_mix_rate;
+ 
+@@ -445,6 +455,16 @@ Error AudioDriverCoreAudio::init_input_device() {
+ 	ERR_FAIL_COND_V(result != noErr, FAILED);
+ #else
+ 	double hw_mix_rate = [AVAudioSession sharedInstance].sampleRate;
++	if (hw_mix_rate <= 0) {
++		// The session reports 0 Hz until it has been activated (e.g. right after the previous
++		// audio unit was disposed by an in-process relaunch). Activate it and ask again, so the
++		// engine doesn't fall back to the Dummy driver (no sound).
++		[[AVAudioSession sharedInstance] setActive:YES error:nil];
++		hw_mix_rate = [AVAudioSession sharedInstance].sampleRate;
++	}
++	if (hw_mix_rate <= 0) {
++		hw_mix_rate = _get_configured_mix_rate();
++	}
+ #endif
+ 	capture_mix_rate = hw_mix_rate;
+ 
 diff --git a/platform/ios/SCsub b/platform/ios/SCsub
 index 92f6c17..91554d2 100644
 --- a/platform/ios/SCsub
