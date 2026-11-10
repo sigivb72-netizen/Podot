@@ -142,3 +142,47 @@ jobs:
         with:
           name: podot-simulator-app
           path: build/simulator/Podot.app
+
+  ios-simulator-metal:
+    name: iPadOS Simulator (Metal) editor/game/editor
+    runs-on: macos-15
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          pip3 install --break-system-packages scons || pip3 install scons
+          brew install cliclick || true
+      - name: Fetch Godot and apply the port
+        run: scripts/fetch_godot.sh
+      - uses: actions/cache/restore@v4
+        with:
+          path: .scons_cache
+          key: ios-simulator-metal-${{ github.run_id }}
+          restore-keys: ios-simulator-metal-
+      - name: Build editor library (arm64 simulator, Metal + OpenGL ES)
+        env:
+          SCONS_CACHE_DIR: ${{ github.workspace }}/.scons_cache
+        run: scripts/build_ios_editor.sh simulator-metal -k
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .scons_cache
+          key: ios-simulator-metal-${{ github.run_id }}
+      - name: Package simulator app
+        run: scripts/package_ios_app.sh simulator build/simulator
+      - name: Run tests in the iPad Simulator
+        timeout-minutes: 90
+        env:
+          PODOT_SIM_MODE: metal
+        run: scripts/run_simulator_tests.sh build/simulator/Podot.app build/simulator-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-metal-test-results
+          path: build/simulator-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: podot-simulator-metal-app
+          path: build/simulator/Podot.app

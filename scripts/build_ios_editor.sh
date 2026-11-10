@@ -16,6 +16,10 @@ ARGS=(platform=ios target=editor arch=arm64 vulkan=no debug_symbols=no "-j$JOBS"
 ARGS+=(optimize=size_extra lto=none)
 if [ "$VARIANT" = "simulator" ]; then
 	ARGS+=(simulator=yes)
+elif [ "$VARIANT" = "simulator-metal" ]; then
+	# Simulator build that keeps the Metal driver (Forward+/Mobile renderers), to test the same
+	# rendering path as real devices. Needs a host whose Simulator supports Metal.
+	ARGS+=(simulator=yes simulator_metal=yes)
 fi
 if [ -n "${SCONS_CACHE_DIR:-}" ]; then
 	ARGS+=("cache_path=$SCONS_CACHE_DIR" "cache_limit=${SCONS_CACHE_LIMIT:-6}")

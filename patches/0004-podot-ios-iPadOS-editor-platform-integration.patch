@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Mon, 9 Nov 2026 14:34:12 +0000
+Date: Tue, 10 Nov 2026 11:59:10 +0000
 Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
 
 - Enable in-process instances in editor builds; relaunch Main in-process
@@ -27,6 +27,7 @@ Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
  drivers/apple_embedded/os_apple_embedded.h    |  17 ++
  drivers/apple_embedded/os_apple_embedded.mm   |  36 +++
  platform/ios/SCsub                            |   2 +
+ platform/ios/detect.py                        |   7 +-
  platform/ios/display_server_ios.h             |   3 +
  platform/ios/display_server_ios.mm            |  22 ++
  platform/ios/ios_document_picker.h            |  47 ++++
@@ -36,7 +37,7 @@ Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
  platform/ios/main_ios.mm                      |  46 ++++
  platform/ios/os_ios.h                         |  12 +
  platform/ios/os_ios.mm                        | 129 +++++++++
- 20 files changed, 1375 insertions(+), 47 deletions(-)
+ 21 files changed, 1381 insertions(+), 48 deletions(-)
  create mode 100644 drivers/apple_embedded/display_server_apple_embedded_pointer.mm
  create mode 100644 platform/ios/ios_document_picker.h
  create mode 100644 platform/ios/ios_document_picker.mm
@@ -1110,6 +1111,31 @@ index 92f6c17..37e02bc 100644
      "main_ios.mm",
      "os_ios.mm",
  ]
+diff --git a/platform/ios/detect.py b/platform/ios/detect.py
+index b7da135..fbd3937 100644
+--- a/platform/ios/detect.py
++++ b/platform/ios/detect.py
+@@ -32,6 +32,11 @@ def get_opts():
+         (("apple_target_triple", "ios_triple"), "Triple for the corresponding target Apple platform toolchain", ""),
+         BoolVariable(("simulator", "ios_simulator"), "Build for Simulator", False),
+         BoolVariable("generate_bundle", "Generate an APP bundle after building iOS/macOS binaries", False),
++        BoolVariable(
++            "simulator_metal",
++            "Keep the Metal rendering driver enabled in Simulator builds (for testing; needs a host with Metal)",
++            False,
++        ),
+     ]
+ 
+ 
+@@ -153,7 +158,7 @@ def configure(env: "SConsEnvironment"):
+     env.Prepend(CPPPATH=["#platform/ios"])
+     env.Append(CPPDEFINES=["IOS_ENABLED", "APPLE_EMBEDDED_ENABLED", "UNIX_ENABLED", "COREAUDIO_ENABLED"])
+ 
+-    if env["metal"] and env["simulator"]:
++    if env["metal"] and env["simulator"] and not env["simulator_metal"]:
+         print_warning("iOS Simulator does not support the Metal rendering driver")
+         env["metal"] = False
+ 
 diff --git a/platform/ios/display_server_ios.h b/platform/ios/display_server_ios.h
 index 01f16b0..38e17a1 100644
 --- a/platform/ios/display_server_ios.h

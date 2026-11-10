@@ -63,6 +63,57 @@ wait_for_file() { # wait_for_file <file> <timeout s> [python condition on json "
 }
 mkdir -p "$DOCS/logs"
 
+collect_crashes() {
+	mkdir -p "$RESULTS/crashes"
+	find "$HOME/Library/Logs/DiagnosticReports" -name "Podot*" -newer "$RESULTS/.start" -exec cp {} "$RESULTS/crashes/" \; 2>/dev/null
+	ls "$RESULTS/crashes" | sed 's/^/crash report: /'
+}
+
+# --- Metal mode: the device rendering path (Mobile renderer on Metal), editor -> game -> editor ------
+# Real iPads run the editor and the game on Metal; this checks that Metal can be torn down and set
+# up again in the same process (PODOT_SIM_MODE=metal, needs a simulator-metal build).
+if [ "${PODOT_SIM_MODE:-}" = "metal" ]; then
+	rm -rf "$DOCS/e2e_metal" && cp -R "$ROOT/tests/projects/e2e" "$DOCS/e2e_metal"
+	sed -i '' -e 's/rendering_method="gl_compatibility"/rendering_method="mobile"/' -e 's/rendering_method.mobile="gl_compatibility"/rendering_method.mobile="mobile"/' "$DOCS/e2e_metal/project.godot"
+	mkdir -p "$DOCS/e2e_metal/.test_results" && touch "$DOCS/e2e_metal/.test_results/PODOT_E2E"
+	launch e2e_metal --verbose --editor --path "$DOCS/e2e_metal"
+	J="$DOCS/e2e_metal/.test_results/editor.json"
+	DONE=0
+	for i in $(seq 1 360); do
+		sleep 10
+		[ $((i % 12)) = 0 ] && shot "metal_$((i / 6))min"
+		if [ -f "$J" ] && python3 -c "import json,sys; sys.exit(0 if json.load(open('$J'))['done'] else 1)" 2>/dev/null; then DONE=1; break; fi
+		if ! app_running; then echo "app is not running anymore"; break; fi
+	done
+	shot metal_final
+	copy_log e2e_metal
+	cp -R "$DOCS/e2e_metal/.test_results" "$RESULTS/e2e_metal_results" 2>/dev/null
+	find "$DATA" -name "in_process_game.log" -exec cp {} "$RESULTS/" \; 2>/dev/null
+	grep -m1 -E "Metal|OpenGL|Vulkan" "$RESULTS/e2e_metal.log" | sed 's/^/renderer line: /'
+	if grep -q "Metal" "$RESULTS/e2e_metal.log" 2>/dev/null; then result PASS metal_renderer_used "$(grep -m1 Metal "$RESULTS/e2e_metal.log" | cut -c1-120)"; else result FAIL metal_renderer_used "the editor did not start on Metal"; fi
+	if [ "$DONE" = 1 ]; then
+		python3 - "$J" <<'PY' | tee -a "$SUMMARY"
+import json, sys
+d = json.load(open(sys.argv[1]))
+for name, c in sorted(d["checks"].items()):
+    print(("PASS" if c["ok"] else "FAIL"), "metal:" + name, c["detail"][:160].replace("\n", " "))
+PY
+		result PASS metal_editor_game_editor "editor -> game -> editor -> restart on Metal"
+	else
+		result FAIL metal_editor_game_editor "did not finish (stage: $(python3 -c "import json; print(json.load(open('$DOCS/e2e_metal/.test_results/state.json'))['stage'])" 2>/dev/null))"
+		tail -40 "$RESULTS/e2e_metal.log"
+		echo "--- game log ---"; tail -20 "$RESULTS/in_process_game.log" 2>/dev/null
+	fi
+	xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1
+	sleep 5
+	collect_crashes
+	for f in "$RESULTS"/crashes/*; do [ -f "$f" ] && { echo "=== $f"; head -120 "$f"; }; done
+	echo "---- Summary ----"
+	cat "$SUMMARY"
+	! grep -q "^FAIL" "$SUMMARY"
+	exit $?
+fi
+
 # --- 1. Application startup (project manager) ----------------------------------------------------
 launch startup
 sleep 45

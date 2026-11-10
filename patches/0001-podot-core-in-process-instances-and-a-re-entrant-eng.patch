@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Mon, 9 Nov 2026 14:34:12 +0000
+Date: Tue, 10 Nov 2026 11:59:10 +0000
 Subject: [PATCH 1/5] podot: core: in-process instances and a re-entrant engine
  core
 
@@ -58,11 +58,11 @@ were applied twice on all platforms).
  core/string/translation_server.cpp      |   6 +
  core/string/translation_server.h        |   1 +
  doc/classes/ProjectSettings.xml         |   6 +
- main/main.cpp                           | 168 +++++++++++++++
+ main/main.cpp                           | 169 +++++++++++++++
  main/performance.cpp                    |   6 +
  main/performance.h                      |   1 +
  platform/linuxbsd/godot_linuxbsd.cpp    |  61 ++++--
- 30 files changed, 854 insertions(+), 45 deletions(-)
+ 30 files changed, 855 insertions(+), 45 deletions(-)
  create mode 100644 core/input/touch_gesture_recognizer.cpp
  create mode 100644 core/input/touch_gesture_recognizer.h
 
@@ -1098,7 +1098,7 @@ index 14e3133..7d40baf 100644
  			If [code]true[/code], the accelerometer sensor is enabled and [method Input.get_accelerometer] returns valid data.
  		</member>
 diff --git a/main/main.cpp b/main/main.cpp
-index 2fc62fd..f23c48d 100644
+index 2fc62fd..22819f7 100644
 --- a/main/main.cpp
 +++ b/main/main.cpp
 @@ -297,6 +297,124 @@ bool profile_gpu = false;
@@ -1237,7 +1237,7 @@ index 2fc62fd..f23c48d 100644
  	Thread::release_main_thread();
  }
  #endif // TESTS_ENABLED
-@@ -1037,7 +1159,25 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
+@@ -1037,7 +1159,26 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
  	Thread::make_main_thread();
  	set_current_thread_safe_for_nodes(true);
  
@@ -1251,6 +1251,7 @@ index 2fc62fd..f23c48d 100644
 +		Main::force_redraw_requested = false;
 +		Main::iterating = 0;
 +		_reset_main_iteration_state();
++		forwardable_cli_arguments.clear();
 +		// Benchmark marks are recorded once per setup (Main is a friend of OS).
 +		OS::get_singleton()->benchmark_marks_from.clear();
 +		OS::get_singleton()->benchmark_marks_final.clear();
@@ -1263,7 +1264,7 @@ index 2fc62fd..f23c48d 100644
  
  	CoreGlobals::print_ready = true;
  
-@@ -2986,6 +3126,7 @@ error:
+@@ -2986,6 +3127,7 @@ error:
  		memdelete(engine);
  	}
  
@@ -1271,7 +1272,7 @@ index 2fc62fd..f23c48d 100644
  	unregister_core_types();
  
  	OS::get_singleton()->_cmdline.clear();
-@@ -3006,6 +3147,10 @@ error:
+@@ -3006,6 +3148,10 @@ error:
  	OS::get_singleton()->finalize_core();
  	locale = String();
  
@@ -1282,7 +1283,7 @@ index 2fc62fd..f23c48d 100644
  	Thread::release_main_thread();
  
  	return exit_err;
-@@ -4915,6 +5060,13 @@ static uint64_t physics_process_max = 0;
+@@ -4915,6 +5061,13 @@ static uint64_t physics_process_max = 0;
  static uint64_t process_max = 0;
  static uint64_t navigation_process_max = 0;
  
@@ -1296,7 +1297,7 @@ index 2fc62fd..f23c48d 100644
  // Return false means iterating further, returning true means `OS::run`
  // will terminate the program. In case of failure, the OS exit code needs
  // to be set explicitly here (defaults to EXIT_SUCCESS).
-@@ -5258,6 +5410,14 @@ void Main::cleanup(bool p_force) {
+@@ -5258,6 +5411,14 @@ void Main::cleanup(bool p_force) {
  
  	OS::get_singleton()->delete_main_loop();
  
@@ -1311,7 +1312,7 @@ index 2fc62fd..f23c48d 100644
  	OS::get_singleton()->_cmdline.clear();
  	OS::get_singleton()->_user_args.clear();
  	OS::get_singleton()->_execpath = "";
-@@ -5395,6 +5555,10 @@ void Main::cleanup(bool p_force) {
+@@ -5395,6 +5556,10 @@ void Main::cleanup(bool p_force) {
  		memdelete(engine);
  	}
  
@@ -1322,7 +1323,7 @@ index 2fc62fd..f23c48d 100644
  	unregister_core_types();
  
  	OS::get_singleton()->benchmark_end_measure("Shutdown", "Main::Cleanup");
-@@ -5402,5 +5566,9 @@ void Main::cleanup(bool p_force) {
+@@ -5402,5 +5567,9 @@ void Main::cleanup(bool p_force) {
  
  	OS::get_singleton()->finalize_core();
  
