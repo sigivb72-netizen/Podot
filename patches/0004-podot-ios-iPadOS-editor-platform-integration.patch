@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Tue, 10 Nov 2026 11:59:10 +0000
+Date: Tue, 10 Nov 2026 12:01:13 +0000
 Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
 
 - Enable in-process instances in editor builds; relaunch Main in-process
@@ -23,22 +23,26 @@ Subject: [PATCH 4/5] podot: ios: iPadOS editor platform integration
  .../godot_view_apple_embedded.mm              | 246 +++++++++++++++++-
  .../apple_embedded/godot_view_controller.mm   | 124 ++++++---
  drivers/apple_embedded/godot_view_renderer.h  |   2 +
- drivers/apple_embedded/godot_view_renderer.mm |  13 +-
- drivers/apple_embedded/os_apple_embedded.h    |  17 ++
+ drivers/apple_embedded/godot_view_renderer.mm |  17 +-
+ drivers/apple_embedded/os_apple_embedded.h    |  19 ++
  drivers/apple_embedded/os_apple_embedded.mm   |  36 +++
- platform/ios/SCsub                            |   2 +
+ platform/ios/SCsub                            |   3 +
  platform/ios/detect.py                        |   7 +-
  platform/ios/display_server_ios.h             |   3 +
  platform/ios/display_server_ios.mm            |  22 ++
+ platform/ios/ios_crash_reporter.h             |  45 ++++
+ platform/ios/ios_crash_reporter.mm            | 201 ++++++++++++++
  platform/ios/ios_document_picker.h            |  47 ++++
  platform/ios/ios_document_picker.mm           | 206 +++++++++++++++
  platform/ios/ipados_editor_support.h          |  53 ++++
  platform/ios/ipados_editor_support.mm         | 155 +++++++++++
- platform/ios/main_ios.mm                      |  46 ++++
- platform/ios/os_ios.h                         |  12 +
- platform/ios/os_ios.mm                        | 129 +++++++++
- 21 files changed, 1381 insertions(+), 48 deletions(-)
+ platform/ios/main_ios.mm                      |  51 ++++
+ platform/ios/os_ios.h                         |  13 +
+ platform/ios/os_ios.mm                        | 144 ++++++++++
+ 23 files changed, 1655 insertions(+), 48 deletions(-)
  create mode 100644 drivers/apple_embedded/display_server_apple_embedded_pointer.mm
+ create mode 100644 platform/ios/ios_crash_reporter.h
+ create mode 100644 platform/ios/ios_crash_reporter.mm
  create mode 100644 platform/ios/ios_document_picker.h
  create mode 100644 platform/ios/ios_document_picker.mm
  create mode 100644 platform/ios/ipados_editor_support.h
@@ -966,10 +970,30 @@ index 1d409d9..2905d55 100644
  @end
  
 diff --git a/drivers/apple_embedded/godot_view_renderer.mm b/drivers/apple_embedded/godot_view_renderer.mm
-index 60c6701..5642f22 100644
+index 60c6701..6f8ffaf 100644
 --- a/drivers/apple_embedded/godot_view_renderer.mm
 +++ b/drivers/apple_embedded/godot_view_renderer.mm
-@@ -113,7 +113,18 @@
+@@ -70,7 +70,9 @@
+ 
+ 	if (!self.hasStartedMain) {
+ 		self.hasStartedMain = YES;
++		OS_AppleEmbedded::get_singleton()->note_phase("Main::start begin");
+ 		OS_AppleEmbedded::get_singleton()->start();
++		OS_AppleEmbedded::get_singleton()->note_phase("Main::start done, running");
+ 		return YES;
+ 	}
+ 
+@@ -82,7 +84,9 @@
+ - (void)setupProjectData {
+ 	self.hasFinishedProjectDataSetup = YES;
+ 
++	OS_AppleEmbedded::get_singleton()->note_phase("Main::setup2 begin (display, rendering)");
+ 	Main::setup2();
++	OS_AppleEmbedded::get_singleton()->note_phase("Main::setup2 done");
+ 
+ 	// this might be necessary before here
+ 	NSDictionary *dict = [[NSBundle mainBundle] infoDictionary];
+@@ -113,7 +117,18 @@
  		return;
  	}
  
@@ -990,7 +1014,7 @@ index 60c6701..5642f22 100644
  
  @end
 diff --git a/drivers/apple_embedded/os_apple_embedded.h b/drivers/apple_embedded/os_apple_embedded.h
-index d801a86..1804536 100644
+index d801a86..b1109d6 100644
 --- a/drivers/apple_embedded/os_apple_embedded.h
 +++ b/drivers/apple_embedded/os_apple_embedded.h
 @@ -34,6 +34,7 @@
@@ -1001,7 +1025,7 @@ index d801a86..1804536 100644
  #include "drivers/unix/os_unix.h"
  #include "servers/audio/audio_server.h"
  #include "servers/rendering/renderer_compositor.h"
-@@ -97,6 +98,15 @@ public:
+@@ -97,6 +98,17 @@ public:
  
  	bool iterate();
  
@@ -1013,11 +1037,13 @@ index d801a86..1804536 100644
 +	// Lets the platform intercept global hardware keyboard shortcuts (e.g. stopping a game that was
 +	// started from the editor). Returns true if the key press was consumed.
 +	virtual bool handle_hardware_key_shortcut(Key p_key, NSInteger p_modifiers) { return false; }
++	// Progress notes for diagnostics (which startup/shutdown step is running).
++	virtual void note_phase(const char *p_phase) {}
 +
  	void start();
  
  	virtual void alert(const String &p_alert, const String &p_title = "ALERT!") override;
-@@ -118,6 +128,13 @@ public:
+@@ -118,6 +130,13 @@ public:
  	virtual String get_user_data_dir(const String &p_user_dir) const override;
  
  	virtual String get_cache_path() const override;
@@ -1099,13 +1125,14 @@ index 84e4821..e4f7b57 100644
  	static String ret;
  	if (ret.is_empty()) {
 diff --git a/platform/ios/SCsub b/platform/ios/SCsub
-index 92f6c17..37e02bc 100644
+index 92f6c17..9bf56c5 100644
 --- a/platform/ios/SCsub
 +++ b/platform/ios/SCsub
-@@ -12,6 +12,8 @@ ios_lib = [
+@@ -12,6 +12,9 @@ ios_lib = [
      "display_layer_ios.mm",
      "display_server_ios.mm",
      "godot_view_ios.mm",
++    "ios_crash_reporter.mm",
 +    "ios_document_picker.mm",
 +    "ipados_editor_support.mm",
      "main_ios.mm",
@@ -1190,6 +1217,264 @@ index ee86f71..006f2f2 100644
  }
  
  DisplayServerIOS::~DisplayServerIOS() {
+diff --git a/platform/ios/ios_crash_reporter.h b/platform/ios/ios_crash_reporter.h
+new file mode 100644
+index 0000000..8283105
+--- /dev/null
++++ b/platform/ios/ios_crash_reporter.h
+@@ -0,0 +1,45 @@
++/**************************************************************************/
++/*  ios_crash_reporter.h                                                  */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#pragma once
++
++// Minimal in-app crash reporter. iOS only keeps crash logs in Settings (hard to reach for users) and
++// a sideloaded app has no other channel, so fatal signals and uncaught exceptions are written to a
++// file with a symbolized backtrace and the last "breadcrumb" (what the app was doing). The report is
++// offered to the user at the next launch and saved to the Documents folder (Files app).
++
++// Installs the handlers. Call once, as early as possible.
++void ios_crash_reporter_install();
++
++// Records what the app is doing (async-signal-safe to read; keep it short).
++void ios_crash_reporter_set_breadcrumb(const char *p_text);
++
++// If the previous run crashed: shows the report (with a Copy button) once the UI is up.
++void ios_crash_reporter_present_previous_report();
+diff --git a/platform/ios/ios_crash_reporter.mm b/platform/ios/ios_crash_reporter.mm
+new file mode 100644
+index 0000000..51ac4d9
+--- /dev/null
++++ b/platform/ios/ios_crash_reporter.mm
+@@ -0,0 +1,201 @@
++/**************************************************************************/
++/*  ios_crash_reporter.mm                                                 */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#import "ios_crash_reporter.h"
++
++#import "drivers/apple_embedded/app_delegate_service.h"
++#import "drivers/apple_embedded/godot_view_controller.h"
++
++#import <UIKit/UIKit.h>
++
++#include <dlfcn.h>
++#include <execinfo.h>
++#include <fcntl.h>
++#include <mach-o/dyld.h>
++#include <signal.h>
++#include <string.h>
++#include <unistd.h>
++
++static int crash_fd = -1;
++static char crash_breadcrumbs[8][160];
++static volatile int crash_breadcrumb_next = 0;
++static char crash_header[256];
++static NSString *previous_report = nil;
++
++static const int crash_signals[] = { SIGSEGV, SIGBUS, SIGILL, SIGABRT, SIGFPE, SIGTRAP };
++
++static void _write_str(const char *p_str) {
++	if (crash_fd >= 0 && p_str) {
++		write(crash_fd, p_str, strlen(p_str));
++	}
++}
++
++static void _write_hex(uintptr_t p_value) {
++	char buf[2 + sizeof(uintptr_t) * 2 + 1];
++	int pos = sizeof(buf) - 1;
++	buf[pos] = 0;
++	do {
++		buf[--pos] = "0123456789abcdef"[p_value & 0xf];
++		p_value >>= 4;
++	} while (p_value && pos > 2);
++	buf[--pos] = 'x';
++	buf[--pos] = '0';
++	_write_str(buf + pos);
++}
++
++static void _write_report_body() {
++	_write_str(crash_header);
++	_write_str("\nLast steps (oldest first):\n");
++	for (int i = 0; i < 8; i++) {
++		const char *crumb = crash_breadcrumbs[(crash_breadcrumb_next + i) % 8];
++		if (crumb[0]) {
++			_write_str("  ");
++			_write_str(crumb);
++			_write_str("\n");
++		}
++	}
++	_write_str("Image slide: ");
++	_write_hex((uintptr_t)_dyld_get_image_vmaddr_slide(0));
++	_write_str("\nBacktrace:\n");
++	void *frames[96];
++	int count = backtrace(frames, 96);
++	if (crash_fd >= 0) {
++		backtrace_symbols_fd(frames, count, crash_fd);
++	}
++}
++
++static void _signal_handler(int p_signal, siginfo_t *p_info, void *p_context) {
++	// Restore the default handlers first, so that a crash in here terminates normally.
++	for (int sig : crash_signals) {
++		signal(sig, SIG_DFL);
++	}
++	_write_str("Podot crash report\nSignal: ");
++	_write_str(strsignal(p_signal));
++	_write_str(" at address ");
++	_write_hex((uintptr_t)(p_info ? p_info->si_addr : nullptr));
++	_write_str("\n");
++	_write_report_body();
++	if (crash_fd >= 0) {
++		fsync(crash_fd);
++	}
++	raise(p_signal);
++}
++
++static void _exception_handler(NSException *p_exception) {
++	_write_str("Podot crash report\nUncaught exception: ");
++	_write_str(p_exception.name.UTF8String);
++	_write_str(": ");
++	_write_str(p_exception.reason.UTF8String);
++	_write_str("\nException backtrace:\n");
++	for (NSString *line in p_exception.callStackSymbols) {
++		_write_str(line.UTF8String);
++		_write_str("\n");
++	}
++	_write_report_body();
++	if (crash_fd >= 0) {
++		fsync(crash_fd);
++	}
++}
++
++static NSString *_report_path() {
++	NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
++	return [[paths firstObject] stringByAppendingPathComponent:@"podot_crash_report.txt"];
++}
++
++void ios_crash_reporter_set_breadcrumb(const char *p_text) {
++	const int slot = crash_breadcrumb_next % 8;
++	strlcpy(crash_breadcrumbs[slot], p_text ? p_text : "", sizeof(crash_breadcrumbs[slot]));
++	crash_breadcrumb_next = (slot + 1) % 8;
++	NSLog(@"[Podot] %s", p_text);
++}
++
++void ios_crash_reporter_install() {
++	NSString *path = _report_path();
++
++	// Pick up the report of the previous run, if any.
++	NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
++	if (content.length > 0) {
++		previous_report = content;
++		NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
++		NSString *copy = [[docs firstObject] stringByAppendingPathComponent:@"Podot-crash-report.txt"];
++		[content writeToFile:copy atomically:YES encoding:NSUTF8StringEncoding error:nil];
++	}
++
++	crash_fd = open(path.fileSystemRepresentation, O_CREAT | O_WRONLY | O_TRUNC, 0644);
++
++	NSDictionary *info = [[NSBundle mainBundle] infoDictionary];
++	snprintf(crash_header, sizeof(crash_header), "App: %s %s (%s), iOS %s, %s",
++			[info[@"CFBundleName"] UTF8String] ?: "?", [info[@"CFBundleShortVersionString"] UTF8String] ?: "?", [info[@"CFBundleVersion"] UTF8String] ?: "?",
++			[UIDevice currentDevice].systemVersion.UTF8String, [UIDevice currentDevice].model.UTF8String);
++
++	struct sigaction action;
++	memset(&action, 0, sizeof(action));
++	action.sa_sigaction = _signal_handler;
++	action.sa_flags = SA_SIGINFO;
++	sigemptyset(&action.sa_mask);
++	for (int sig : crash_signals) {
++		sigaction(sig, &action, nullptr);
++	}
++	NSSetUncaughtExceptionHandler(&_exception_handler);
++}
++
++static void _present_report(int p_attempt) {
++	UIViewController *vc = GDTAppDelegateService.viewController;
++	if (!vc || !vc.view.window || vc.presentedViewController) {
++		if (p_attempt < 30) {
++			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
++				_present_report(p_attempt + 1);
++			});
++		}
++		return;
++	}
++	NSString *report = previous_report;
++	previous_report = nil;
++	NSString *shown = report.length > 1500 ? [[report substringToIndex:1500] stringByAppendingString:@"\n…"] : report;
++	UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Podot closed unexpectedly last time"
++																   message:[NSString stringWithFormat:@"A report was saved as \"Podot-crash-report.txt\" in the Podot folder of the Files app.\n\n%@", shown]
++															preferredStyle:UIAlertControllerStyleAlert];
++	[alert addAction:[UIAlertAction actionWithTitle:@"Copy Report"
++											  style:UIAlertActionStyleDefault
++											handler:^(UIAlertAction *action) {
++												[UIPasteboard generalPasteboard].string = report;
++											}]];
++	[alert addAction:[UIAlertAction actionWithTitle:@"Close" style:UIAlertActionStyleCancel handler:nil]];
++	[vc presentViewController:alert animated:YES completion:nil];
++}
++
++void ios_crash_reporter_present_previous_report() {
++	if (!previous_report) {
++		return;
++	}
++	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
++		_present_report(0);
++	});
++}
 diff --git a/platform/ios/ios_document_picker.h b/platform/ios/ios_document_picker.h
 new file mode 100644
 index 0000000..22ecd04
@@ -1676,13 +1961,14 @@ index 0000000..f442c53
 +
 +#endif // TOOLS_ENABLED
 diff --git a/platform/ios/main_ios.mm b/platform/ios/main_ios.mm
-index 7d61b8a..89a2ccc 100644
+index 7d61b8a..be5c31c 100644
 --- a/platform/ios/main_ios.mm
 +++ b/platform/ios/main_ios.mm
-@@ -30,6 +30,11 @@
+@@ -30,6 +30,12 @@
  
  #import "os_ios.h"
  
++#import "ios_crash_reporter.h"
 +#import "ios_document_picker.h"
 +#ifdef TOOLS_ENABLED
 +#import "ipados_editor_support.h"
@@ -1691,7 +1977,18 @@ index 7d61b8a..89a2ccc 100644
  #include "core/profiling/profiling.h"
  #import "drivers/apple_embedded/godot_app_delegate.h"
  #import "drivers/apple_embedded/main_utilities.h"
-@@ -59,6 +64,47 @@ int apple_embedded_main(int argc, char **argv) {
+@@ -47,6 +53,10 @@ int apple_embedded_main(int argc, char **argv) {
+ 	setenv("MVK_CONFIG_FULL_IMAGE_VIEW_SWIZZLE", "1", 1);
+ #endif
+ 
++	ios_crash_reporter_install();
++	ios_crash_reporter_set_breadcrumb("app launch");
++	ios_crash_reporter_present_previous_report();
++
+ 	change_to_launch_dir(argv);
+ 
+ 	os = new OS_IOS();
+@@ -59,6 +69,47 @@ int apple_embedded_main(int argc, char **argv) {
  
  	godot_init_profiler();
  
@@ -1740,13 +2037,14 @@ index 7d61b8a..89a2ccc 100644
  
  	if (err != OK) {
 diff --git a/platform/ios/os_ios.h b/platform/ios/os_ios.h
-index 89eeab1..dd05dab 100644
+index 89eeab1..21e3a61 100644
 --- a/platform/ios/os_ios.h
 +++ b/platform/ios/os_ios.h
-@@ -42,6 +42,18 @@ public:
+@@ -42,6 +42,19 @@ public:
  	~OS_IOS();
  
  	virtual String get_name() const override;
++	virtual void note_phase(const char *p_phase) override;
 +
 +#ifdef TOOLS_ENABLED
 +	// iPadOS editor: instances (project manager, editor, game) run one after another in this
@@ -1763,13 +2061,15 @@ index 89eeab1..dd05dab 100644
  
  #endif // IOS_ENABLED
 diff --git a/platform/ios/os_ios.mm b/platform/ios/os_ios.mm
-index 6aa35c5..b02edb0 100644
+index 6aa35c5..bb8b158 100644
 --- a/platform/ios/os_ios.mm
 +++ b/platform/ios/os_ios.mm
-@@ -32,6 +32,16 @@
+@@ -31,6 +31,17 @@
+ #import "os_ios.h"
  
  #import "display_server_ios.h"
- 
++#import "ios_crash_reporter.h"
++
 +#ifdef TOOLS_ENABLED
 +#import "ipados_editor_support.h"
 +
@@ -1779,14 +2079,17 @@ index 6aa35c5..b02edb0 100644
 +
 +#import <UIKit/UIKit.h>
 +#endif
-+
+ 
  #ifdef IOS_ENABLED
  
- OS_IOS *OS_IOS::get_singleton() {
-@@ -49,4 +59,123 @@ String OS_IOS::get_name() const {
+@@ -49,4 +60,137 @@ String OS_IOS::get_name() const {
  	return "iOS";
  }
  
++void OS_IOS::note_phase(const char *p_phase) {
++	ios_crash_reporter_set_breadcrumb(p_phase);
++}
++
 +#ifdef TOOLS_ENABLED
 +extern char **gargv;
 +
@@ -1853,7 +2156,9 @@ index 6aa35c5..b02edb0 100644
 +	ipados_editor_set_game_controls_visible(false);
 +
 +	print_verbose("iPadOS: tearing down the current instance to start the next one in-process.");
++	note_phase(was_game ? "relaunch: Main::cleanup begin (game)" : "relaunch: Main::cleanup begin (editor/project manager)");
 +	Main::cleanup(true);
++	note_phase("relaunch: Main::cleanup done");
 +	ipados_editor_release_rendering_surface();
 +
 +	// Try the queued instances until one of them starts (e.g. a game without a main scene fails).
@@ -1882,7 +2187,15 @@ index 6aa35c5..b02edb0 100644
 +			pm_args.push_back("--project-manager");
 +			queue_in_process_instance(pm_args);
 +		}
++		{
++			String joined = "relaunch: Main::setup begin:";
++			for (const String &arg : args) {
++				joined += " " + arg.get_file();
++			}
++			note_phase(joined.utf8().get_data());
++		}
 +		const Error err = Main::setup(gargv[0], argv.size(), argv.ptrw(), false);
++		note_phase(err == OK ? "relaunch: Main::setup done" : "relaunch: Main::setup FAILED");
 +		if (err == OK && added_fallback) {
 +			clear_pending_in_process_instances();
 +		}

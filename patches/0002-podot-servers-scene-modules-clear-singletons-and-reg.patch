@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Tue, 10 Nov 2026 11:59:10 +0000
+Date: Tue, 10 Nov 2026 12:01:13 +0000
 Subject: [PATCH 2/5] podot: servers, scene, modules: clear singletons and
  registries on teardown
 
@@ -15,6 +15,10 @@ let them propagate), and the 3D viewport pans with unmodified pan
 gestures on touchscreens (two-finger drag).
 ---
  drivers/gles3/rasterizer_gles3.cpp              |  4 ++++
+ drivers/metal/metal_objects_shared.cpp          |  4 +++-
+ drivers/metal/metal_objects_shared.h            |  2 ++
+ drivers/metal/rendering_device_driver_metal.cpp |  4 ++++
+ .../metal/rendering_device_driver_metal3.cpp    | 12 ++++++++++++
  .../gdscript_language_protocol.h                |  3 +++
  .../gltf/editor/editor_import_blend_runner.cpp  |  6 ++++++
  .../gltf/editor/editor_import_blend_runner.h    |  1 +
@@ -41,7 +45,7 @@ gestures on touchscreens (two-finger drag).
  servers/rendering/rendering_server_default.cpp  | 17 +++++++++++++++++
  servers/rendering/shader_types.cpp              |  6 ++++++
  servers/rendering/shader_types.h                |  1 +
- 27 files changed, 113 insertions(+), 5 deletions(-)
+ 31 files changed, 134 insertions(+), 6 deletions(-)
 
 diff --git a/drivers/gles3/rasterizer_gles3.cpp b/drivers/gles3/rasterizer_gles3.cpp
 index a4208f4..f9bb510 100644
@@ -58,6 +62,72 @@ index a4208f4..f9bb510 100644
  }
  
  void RasterizerGLES3::_blit_render_target_to_screen(DisplayServerEnums::WindowID p_screen, const RenderingServerTypes::BlitToScreen &p_blit, bool p_first) {
+diff --git a/drivers/metal/metal_objects_shared.cpp b/drivers/metal/metal_objects_shared.cpp
+index 69a399f..6477a88 100644
+--- a/drivers/metal/metal_objects_shared.cpp
++++ b/drivers/metal/metal_objects_shared.cpp
+@@ -660,7 +660,9 @@ MDLibrary::MDLibrary(ShaderCacheEntry *p_entry
+ }
+ 
+ MDLibrary::~MDLibrary() {
+-	_entry->notify_free();
++	if (_entry) {
++		_entry->notify_free();
++	}
+ }
+ 
+ void MDLibrary::set_label(NS::String *p_label) {
+diff --git a/drivers/metal/metal_objects_shared.h b/drivers/metal/metal_objects_shared.h
+index e5d01d9..f5972f7 100644
+--- a/drivers/metal/metal_objects_shared.h
++++ b/drivers/metal/metal_objects_shared.h
+@@ -860,6 +860,8 @@ public:
+ 	virtual MTL::Library *get_library() = 0;
+ 	virtual NS::Error *get_error() = 0;
+ 	virtual void set_label(NS::String *p_label);
++	/// Called when the shader cache (and its driver) is destroyed before this library.
++	void detach_cache_entry() { _entry = nullptr; }
+ #ifdef DEV_ENABLED
+ 	NS::String *get_original_source() const { return _original_source.get(); }
+ #endif
+diff --git a/drivers/metal/rendering_device_driver_metal.cpp b/drivers/metal/rendering_device_driver_metal.cpp
+index 90dae10..ff65a53 100644
+--- a/drivers/metal/rendering_device_driver_metal.cpp
++++ b/drivers/metal/rendering_device_driver_metal.cpp
+@@ -2754,6 +2754,10 @@ RenderingDeviceDriverMetal::RenderingDeviceDriverMetal(RenderingContextDriverMet
+ 
+ RenderingDeviceDriverMetal::~RenderingDeviceDriverMetal() {
+ 	for (KeyValue<SHA256Digest, ShaderCacheEntry *> &kv : _shader_cache) {
++		// A library that outlives the driver must not touch the cache when it is released later.
++		if (std::shared_ptr<MDLibrary> library = kv.value->library.lock()) {
++			library->detach_cache_entry();
++		}
+ 		memdelete(kv.value);
+ 	}
+ 
+diff --git a/drivers/metal/rendering_device_driver_metal3.cpp b/drivers/metal/rendering_device_driver_metal3.cpp
+index 1fbd16f..cb1be19 100644
+--- a/drivers/metal/rendering_device_driver_metal3.cpp
++++ b/drivers/metal/rendering_device_driver_metal3.cpp
+@@ -84,6 +84,18 @@ RenderingDeviceDriverMetal::RenderingDeviceDriverMetal(RenderingContextDriverMet
+ }
+ 
+ RenderingDeviceDriverMetal::~RenderingDeviceDriverMetal() {
++	// Wait for the GPU to finish everything that was submitted: the completion and scheduling
++	// handlers of in-flight command buffers reference fences and surfaces that are freed with the
++	// driver. This matters when the driver is destroyed while the app keeps running (the engine
++	// being set up again in the same process), unlike at process exit.
++	if (device_queue.get()) {
++		MTL::CommandBuffer *drain = device_queue->commandBuffer();
++		if (drain) {
++			drain->commit();
++			drain->waitUntilCompleted();
++		}
++	}
++
+ 	for (MDCommandBuffer *cb : command_buffers) {
+ 		memdelete(cb);
+ 	}
 diff --git a/modules/gdscript/language_server/gdscript_language_protocol.h b/modules/gdscript/language_server/gdscript_language_protocol.h
 index 6ba4fc5..4f68443 100644
 --- a/modules/gdscript/language_server/gdscript_language_protocol.h

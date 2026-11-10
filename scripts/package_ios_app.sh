@@ -58,7 +58,8 @@ xcrun --sdk "$SDK" swiftc -parse-as-library -target "$TARGET" -sdk "$SDK_PATH" -
 	-lc++ -lz \
 	-Xlinker -ObjC -Xlinker -dead_strip \
 	-Xlinker -rpath -Xlinker @executable_path/Frameworks
-xcrun strip -x "$APP/$EXECUTABLE"
+# Keep function names (only debug info is stripped), so the in-app crash reporter can symbolize.
+xcrun strip -S "$APP/$EXECUTABLE"
 
 sed -e "s|@DISPLAY_NAME@|$DISPLAY_NAME|g" -e "s|@EXECUTABLE@|$EXECUTABLE|g" -e "s|@BUNDLE_ID@|$BUNDLE_ID|g" \
 	-e "s|@VERSION@|$VERSION|g" -e "s|@BUILD_NUMBER@|$BUILD_NUMBER|g" -e "s|@SUPPORTED_PLATFORM@|$SUPPORTED_PLATFORM|g" \
