@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Tue, 10 Nov 2026 12:19:12 +0000
+Date: Tue, 10 Nov 2026 12:33:14 +0000
 Subject: [PATCH 2/5] podot: servers, scene, modules: clear singletons and
  registries on teardown
 
@@ -17,7 +17,7 @@ gestures on touchscreens (two-finger drag).
  drivers/gles3/rasterizer_gles3.cpp              |  4 ++++
  drivers/metal/metal_objects_shared.cpp          |  4 +++-
  drivers/metal/metal_objects_shared.h            |  2 ++
- drivers/metal/rendering_device_driver_metal.cpp |  4 ++++
+ drivers/metal/rendering_device_driver_metal.cpp | 15 +++++++++++++++
  .../metal/rendering_device_driver_metal3.cpp    | 12 ++++++++++++
  .../gdscript_language_protocol.h                |  3 +++
  .../gltf/editor/editor_import_blend_runner.cpp  |  6 ++++++
@@ -45,7 +45,7 @@ gestures on touchscreens (two-finger drag).
  servers/rendering/rendering_server_default.cpp  | 17 +++++++++++++++++
  servers/rendering/shader_types.cpp              |  6 ++++++
  servers/rendering/shader_types.h                |  1 +
- 31 files changed, 134 insertions(+), 6 deletions(-)
+ 31 files changed, 145 insertions(+), 6 deletions(-)
 
 diff --git a/drivers/gles3/rasterizer_gles3.cpp b/drivers/gles3/rasterizer_gles3.cpp
 index a4208f4..f9bb510 100644
@@ -91,7 +91,7 @@ index e5d01d9..f5972f7 100644
  	NS::String *get_original_source() const { return _original_source.get(); }
  #endif
 diff --git a/drivers/metal/rendering_device_driver_metal.cpp b/drivers/metal/rendering_device_driver_metal.cpp
-index 90dae10..ff65a53 100644
+index 90dae10..6b481f1 100644
 --- a/drivers/metal/rendering_device_driver_metal.cpp
 +++ b/drivers/metal/rendering_device_driver_metal.cpp
 @@ -2754,6 +2754,10 @@ RenderingDeviceDriverMetal::RenderingDeviceDriverMetal(RenderingContextDriverMet
@@ -105,6 +105,25 @@ index 90dae10..ff65a53 100644
  		memdelete(kv.value);
  	}
  
+@@ -2893,7 +2897,18 @@ Error RenderingDeviceDriverMetal::_initialize(uint32_t p_device_index, uint32_t
+ 	}
+ 
+ 	// The Metal renderer requires Apple4 family. This is 2017 era A11 chips and newer.
++#if TARGET_OS_SIMULATOR
++	// Simulators on virtualized hosts (CI) report an old GPU family. Keep going there: Simulator
++	// builds with Metal are only used to test the engine (see `simulator_metal`), and features the
++	// simulated GPU lacks only produce rendering errors.
++	const bool gpu_family_too_old = false;
+ 	if (device_properties->features.highestFamily < MTL::GPUFamilyApple4) {
++		WARN_PRINT("The Simulator GPU does not meet the Metal renderer's requirements; rendering may be incorrect.");
++	}
++#else
++	const bool gpu_family_too_old = device_properties->features.highestFamily < MTL::GPUFamilyApple4;
++#endif
++	if (gpu_family_too_old) {
+ 		String error_string = vformat("Your Apple GPU does not support the following features, which are required to use Metal-based renderers in Godot:\n\n");
+ 		if (!device_properties->features.imageCubeArray) {
+ 			error_string += "- No support for image cube arrays.\n";
 diff --git a/drivers/metal/rendering_device_driver_metal3.cpp b/drivers/metal/rendering_device_driver_metal3.cpp
 index 1fbd16f..cb1be19 100644
 --- a/drivers/metal/rendering_device_driver_metal3.cpp
