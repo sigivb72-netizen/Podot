@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Wed, 11 Nov 2026 06:00:15 +0000
+Date: Wed, 11 Nov 2026 06:36:25 +0000
 Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  adaptations
 
@@ -72,7 +72,7 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  .../project_manager/project_device_limits.h   |  60 ++++
  editor/project_manager/project_manager.cpp    |  32 +-
  editor/project_manager/project_manager.h      |   3 +
- editor/register_editor_types.cpp              |   2 +
+ editor/register_editor_types.cpp              |   5 +
  editor/run/editor_run.cpp                     |  32 ++
  editor/run/editor_run_bar.cpp                 |   6 +
  editor/run/editor_run_bar.h                   |   1 +
@@ -110,7 +110,7 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  editor/shader/shader_file_editor_plugin.cpp   |   6 +
  editor/shader/shader_file_editor_plugin.h     |   1 +
  .../version_control_editor_plugin.cpp         |   4 +
- 83 files changed, 1249 insertions(+), 47 deletions(-)
+ 83 files changed, 1252 insertions(+), 47 deletions(-)
  create mode 100644 editor/project_manager/project_device_limits.cpp
  create mode 100644 editor/project_manager/project_device_limits.h
  create mode 100644 editor/run/in_process_game_window.cpp
@@ -1499,10 +1499,27 @@ index 501cdb0..f06adf4 100644
  	Label *ask_update_label = nullptr;
  	CheckBox *ask_update_backup = nullptr;
 diff --git a/editor/register_editor_types.cpp b/editor/register_editor_types.cpp
-index c66d3bd..f04df87 100644
+index c66d3bd..184bbea 100644
 --- a/editor/register_editor_types.cpp
 +++ b/editor/register_editor_types.cpp
-@@ -334,6 +334,8 @@ void register_editor_types() {
+@@ -36,6 +36,7 @@
+ #include "core/object/class_db.h"
+ #include "core/object/script_language.h"
+ #include "core/os/os.h"
++#include "editor/run/in_process_game_window.h"
+ #include "editor/animation/animation_tree_editor_plugin.h"
+ #include "editor/audio/audio_stream_editor_plugin.h"
+ #include "editor/audio/audio_stream_randomizer_editor_plugin.h"
+@@ -153,6 +154,8 @@ void register_editor_types() {
+ 	EditorStringNames::create();
+ 
+ 	GDREGISTER_CLASS(EditorPaths);
++	GDREGISTER_INTERNAL_CLASS(InProcessGameView);
++	GDREGISTER_INTERNAL_CLASS(InProcessGameWindow);
+ 	GDREGISTER_VIRTUAL_CLASS(EditorPlugin);
+ 	GDREGISTER_CLASS(EditorTranslationParserPlugin);
+ 	GDREGISTER_CLASS(EditorImportPlugin);
+@@ -334,6 +337,8 @@ void register_editor_types() {
  void unregister_editor_types() {
  	OS::get_singleton()->benchmark_begin_measure("Editor", "Unregister Types");
  

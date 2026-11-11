@@ -116,7 +116,7 @@ func _run() -> void:
 			ur.add_undo_property(sky, "color", before)
 			ur.commit_action()
 			var changed := sky.color == Color(1, 0, 0)
-			ur.undo()
+			ur.get_history_undo_redo(ur.get_object_history_id(sky)).undo()
 			check("editor_usable_while_game_runs", changed and sky.color == before, "edit + undo on the edited scene")
 	check("editor_kept_running", Engine.get_process_frames() - editor_frames > 30, Engine.get_process_frames() - editor_frames)
 	check("bird_flies_through_pipes", s.score >= 3, "score %d, flaps %d, pipes %d" % [s.score, s.flaps, s.pipes_spawned])
