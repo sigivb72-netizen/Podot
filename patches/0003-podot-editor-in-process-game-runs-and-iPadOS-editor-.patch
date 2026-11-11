@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Wed, 11 Nov 2026 05:50:14 +0000
+Date: Wed, 11 Nov 2026 06:00:15 +0000
 Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  adaptations
 
@@ -78,7 +78,7 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  editor/run/editor_run_bar.h                   |   1 +
  editor/run/game_view_plugin.cpp               |  18 +-
  editor/run/game_view_plugin.h                 |   9 +-
- editor/run/in_process_game_window.cpp         | 303 ++++++++++++++++++
+ editor/run/in_process_game_window.cpp         | 305 ++++++++++++++++++
  editor/run/in_process_game_window.h           |  90 ++++++
  editor/run/run_instances_dialog.cpp           |   6 +
  editor/run/run_instances_dialog.h             |   1 +
@@ -110,7 +110,7 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  editor/shader/shader_file_editor_plugin.cpp   |   6 +
  editor/shader/shader_file_editor_plugin.h     |   1 +
  .../version_control_editor_plugin.cpp         |   4 +
- 83 files changed, 1247 insertions(+), 47 deletions(-)
+ 83 files changed, 1249 insertions(+), 47 deletions(-)
  create mode 100644 editor/project_manager/project_device_limits.cpp
  create mode 100644 editor/project_manager/project_device_limits.h
  create mode 100644 editor/run/in_process_game_window.cpp
@@ -1716,10 +1716,10 @@ index ddcc21d..3236553 100644
  	virtual void set_window_layout(Ref<ConfigFile> p_layout) override;
 diff --git a/editor/run/in_process_game_window.cpp b/editor/run/in_process_game_window.cpp
 new file mode 100644
-index 0000000..584fa42
+index 0000000..f402988
 --- /dev/null
 +++ b/editor/run/in_process_game_window.cpp
-@@ -0,0 +1,303 @@
+@@ -0,0 +1,305 @@
 +/**************************************************************************/
 +/*  in_process_game_window.cpp                                            */
 +/**************************************************************************/
@@ -1753,6 +1753,7 @@ index 0000000..584fa42
 +#include "in_process_game_window.h"
 +
 +#include "core/config/project_settings.h"
++#include "core/object/callable_mp.h"
 +#include "core/input/touch_gesture_recognizer.h"
 +#include "editor/editor_node.h"
 +#include "editor/editor_string_names.h"
@@ -1762,6 +1763,7 @@ index 0000000..584fa42
 +#include "scene/gui/button.h"
 +#include "scene/gui/label.h"
 +#include "scene/main/in_process_game.h"
++#include "scene/main/scene_tree.h"
 +
 +InProcessGameWindow *InProcessGameWindow::singleton = nullptr;
 +

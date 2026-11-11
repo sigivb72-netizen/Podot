@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Wed, 11 Nov 2026 05:50:14 +0000
+Date: Wed, 11 Nov 2026 06:00:15 +0000
 Subject: [PATCH 2/5] podot: servers, scene, modules: clear singletons and
  registries on teardown
 
@@ -44,7 +44,7 @@ pressing Play on iPadOS).
  scene/debugger/view_3d_controller.cpp         |  10 +
  scene/gui/file_dialog.cpp                     |   5 +-
  scene/gui/view_panner.cpp                     |   2 +
- scene/main/in_process_game.cpp                | 388 ++++++++++++++++++
+ scene/main/in_process_game.cpp                | 392 ++++++++++++++++++
  scene/main/in_process_game.h                  | 105 +++++
  scene/main/window.cpp                         |  18 +-
  scene/main/window.h                           |   6 +
@@ -62,7 +62,7 @@ pressing Play on iPadOS).
  .../rendering/rendering_server_default.cpp    |  17 +
  servers/rendering/shader_types.cpp            |   6 +
  servers/rendering/shader_types.h              |   1 +
- 36 files changed, 663 insertions(+), 9 deletions(-)
+ 36 files changed, 667 insertions(+), 9 deletions(-)
  create mode 100644 scene/main/in_process_game.cpp
  create mode 100644 scene/main/in_process_game.h
 
@@ -382,10 +382,10 @@ index 4ed1152..477abb6 100644
  	Ref<InputEventScreenDrag> screen_drag = p_event;
 diff --git a/scene/main/in_process_game.cpp b/scene/main/in_process_game.cpp
 new file mode 100644
-index 0000000..66f7ced
+index 0000000..187dd26
 --- /dev/null
 +++ b/scene/main/in_process_game.cpp
-@@ -0,0 +1,388 @@
+@@ -0,0 +1,392 @@
 +/**************************************************************************/
 +/*  in_process_game.cpp                                                   */
 +/**************************************************************************/
@@ -423,6 +423,7 @@ index 0000000..66f7ced
 +#include "core/input/input_map.h"
 +#include "core/io/resource_loader.h"
 +#include "core/io/resource_uid.h"
++#include "core/object/class_db.h"
 +#include "core/object/message_queue.h"
 +#include "core/object/script_language.h"
 +#include "core/os/os.h"
@@ -468,7 +469,10 @@ index 0000000..66f7ced
 +
 +Ref<Texture2D> InProcessGame::get_texture() const {
 +	Window *root = get_root();
-+	return root ? root->get_texture() : Ref<Texture2D>();
++	if (!root) {
++		return Ref<Texture2D>();
++	}
++	return root->get_texture();
 +}
 +
 +void InProcessGame::set_size(const Size2i &p_size) {
