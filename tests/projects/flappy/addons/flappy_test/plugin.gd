@@ -41,8 +41,10 @@ func _find_by_class(node: Node, cls: String) -> Node:
 
 
 func _view_center(view: Control) -> Vector2:
-	# Event positions are relative to the editor's main window.
-	return view.get_screen_position() + view.size / 2.0 - Vector2(get_tree().root.position)
+	# Event positions are relative to the editor's main window; the game window is embedded in it.
+	var win := view.get_window()
+	var origin := Vector2(win.position) if win.is_embedded() else Vector2()
+	return origin + view.get_global_rect().get_center()
 
 
 func _tap(view: Control) -> void:
@@ -74,6 +76,7 @@ func _run() -> void:
 	EditorInterface.play_main_scene()
 	await _wait(1.5)
 	var win := _find_by_class(EditorInterface.get_base_control(), "InProcessGameWindow") as Window
+	check("game_window_inside_editor", win != null and win.is_embedded(), "embedded" if win and win.is_embedded() else "separate OS window")
 	var view := _find_by_class(EditorInterface.get_base_control(), "InProcessGameView") as Control
 	check("game_window_shown", win != null and win.visible, win.get_size() if win else null)
 	check("editor_stays_open", EditorInterface.is_playing_scene() and EditorInterface.get_edited_scene_root() == edited)
@@ -87,10 +90,13 @@ func _run() -> void:
 		return
 
 	# --- First tap starts the game (touch through the editor's input path) ---
+	var view_events := [0]
+	view.gui_input.connect(func(_e): view_events[0] += 1)
+	print("[flappy] window pos %s size %s, view rect %s, screen pos %s, tap at %s" % [win.position, win.size, view.get_global_rect(), view.get_screen_position(), _view_center(view)])
 	_tap(view)
 	await _wait(0.4)
 	s = _state()
-	check("tap_starts_game", s.started and s.flaps >= 1, s)
+	check("tap_starts_game", s.started and s.flaps >= 1, "view got %d events; %s" % [view_events[0], s])
 
 	# --- Fly: tap when the bird drops below the next gap; edit the scene in the editor meanwhile ---
 	var edited_in_editor := false

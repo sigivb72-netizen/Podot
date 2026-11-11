@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Wed, 11 Nov 2026 06:36:24 +0000
+Date: Wed, 11 Nov 2026 06:46:07 +0000
 Subject: [PATCH 2/5] podot: servers, scene, modules: clear singletons and
  registries on teardown
 
@@ -47,7 +47,7 @@ pressing Play on iPadOS).
  scene/main/in_process_game.cpp                | 392 ++++++++++++++++++
  scene/main/in_process_game.h                  | 105 +++++
  scene/main/viewport.cpp                       |  21 +
- scene/main/window.cpp                         |  18 +-
+ scene/main/window.cpp                         |  20 +-
  scene/main/window.h                           |   6 +
  scene/resources/resource_format_text.cpp      |   6 +
  scene/resources/resource_format_text.h        |   1 +
@@ -63,7 +63,7 @@ pressing Play on iPadOS).
  .../rendering/rendering_server_default.cpp    |  17 +
  servers/rendering/shader_types.cpp            |   6 +
  servers/rendering/shader_types.h              |   1 +
- 37 files changed, 688 insertions(+), 9 deletions(-)
+ 37 files changed, 689 insertions(+), 10 deletions(-)
  create mode 100644 scene/main/in_process_game.cpp
  create mode 100644 scene/main/in_process_game.h
 
@@ -923,7 +923,7 @@ index 54f9f2c..1cdcdcb 100644
  	// If the event is a mouse button, we need to check whether another window was clicked.
  
 diff --git a/scene/main/window.cpp b/scene/main/window.cpp
-index bc56ddb..33bcad5 100644
+index bc56ddb..5614630 100644
 --- a/scene/main/window.cpp
 +++ b/scene/main/window.cpp
 @@ -410,6 +410,12 @@ void Window::move_to_center() {
@@ -939,6 +939,15 @@ index bc56ddb..33bcad5 100644
  void Window::set_size(const Size2i &p_size) {
  	ERR_MAIN_THREAD_GUARD;
  #if defined(ANDROID_ENABLED)
+@@ -1425,7 +1431,7 @@ void Window::_update_viewport_size() {
+ 		}
+ 	}
+ 
+-	bool allocate = is_inside_tree() && visible && (window_id != DisplayServerEnums::INVALID_WINDOW_ID || embedder != nullptr);
++	bool allocate = is_inside_tree() && visible && (window_id != DisplayServerEnums::INVALID_WINDOW_ID || embedder != nullptr || offscreen_root);
+ 	_set_size(final_size, 1, final_size_override, allocate);
+ 
+ 	if (window_id != DisplayServerEnums::INVALID_WINDOW_ID) {
 @@ -1676,7 +1682,13 @@ void Window::_notification(int p_what) {
  				}
  

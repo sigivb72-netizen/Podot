@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Wed, 11 Nov 2026 06:36:25 +0000
+Date: Wed, 11 Nov 2026 06:46:07 +0000
 Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  adaptations
 
@@ -68,7 +68,7 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  editor/inspector/editor_resource_preview.cpp  |  11 +
  editor/inspector/editor_resource_preview.h    |   4 +
  editor/plugins/editor_plugin.h                |   4 +
- .../project_manager/project_device_limits.cpp | 144 +++++++++
+ .../project_manager/project_device_limits.cpp | 144 ++++++++
  .../project_manager/project_device_limits.h   |  60 ++++
  editor/project_manager/project_manager.cpp    |  32 +-
  editor/project_manager/project_manager.h      |   3 +
@@ -78,8 +78,8 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  editor/run/editor_run_bar.h                   |   1 +
  editor/run/game_view_plugin.cpp               |  18 +-
  editor/run/game_view_plugin.h                 |   9 +-
- editor/run/in_process_game_window.cpp         | 305 ++++++++++++++++++
- editor/run/in_process_game_window.h           |  90 ++++++
+ editor/run/in_process_game_window.cpp         | 307 ++++++++++++++++++
+ editor/run/in_process_game_window.h           |  90 +++++
  editor/run/run_instances_dialog.cpp           |   6 +
  editor/run/run_instances_dialog.h             |   1 +
  editor/scene/2d/tiles/tile_set_editor.cpp     |   6 +
@@ -104,13 +104,13 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  editor/settings/editor_command_palette.h      |   1 +
  editor/settings/editor_feature_profile.cpp    |   6 +
  editor/settings/editor_feature_profile.h      |   1 +
- editor/settings/editor_settings.cpp           |  36 ++-
+ editor/settings/editor_settings.cpp           |  36 +-
  editor/settings/project_settings_editor.cpp   |   6 +
  editor/settings/project_settings_editor.h     |   1 +
  editor/shader/shader_file_editor_plugin.cpp   |   6 +
  editor/shader/shader_file_editor_plugin.h     |   1 +
  .../version_control_editor_plugin.cpp         |   4 +
- 83 files changed, 1252 insertions(+), 47 deletions(-)
+ 83 files changed, 1254 insertions(+), 47 deletions(-)
  create mode 100644 editor/project_manager/project_device_limits.cpp
  create mode 100644 editor/project_manager/project_device_limits.h
  create mode 100644 editor/run/in_process_game_window.cpp
@@ -1733,10 +1733,10 @@ index ddcc21d..3236553 100644
  	virtual void set_window_layout(Ref<ConfigFile> p_layout) override;
 diff --git a/editor/run/in_process_game_window.cpp b/editor/run/in_process_game_window.cpp
 new file mode 100644
-index 0000000..f402988
+index 0000000..4202f96
 --- /dev/null
 +++ b/editor/run/in_process_game_window.cpp
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,307 @@
 +/**************************************************************************/
 +/*  in_process_game_window.cpp                                            */
 +/**************************************************************************/
@@ -1799,7 +1799,9 @@ index 0000000..f402988
 +				// The game's root window has the size of this view in pixels, like a real window.
 +				game->set_size(Size2i((get_size() * _get_pixel_scale()).round()));
 +				// Taps on the game reach it immediately (no wait for a possible two-finger gesture).
-+				TouchGestureRecognizer::direct_input_area = Rect2(get_screen_position() - Vector2(get_tree()->get_root()->get_position()), get_size() * _get_pixel_scale());
++				Window *w = get_window();
++				const Point2 origin = (w && w->is_embedded()) ? Point2(w->get_position()) : Point2();
++				TouchGestureRecognizer::direct_input_area = Rect2(origin + get_global_rect().position, get_size() * _get_pixel_scale());
 +			} else {
 +				TouchGestureRecognizer::direct_input_area = Rect2();
 +			}

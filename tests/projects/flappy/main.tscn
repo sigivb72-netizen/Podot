@@ -12,6 +12,7 @@ outline_color = Color(0, 0, 0, 1)
 script = ExtResource("1")
 
 [node name="Sky" type="ColorRect" parent="."]
+mouse_filter = 2
 offset_right = 480.0
 offset_bottom = 720.0
 color = Color(0.45, 0.75, 0.95, 1)
@@ -19,6 +20,7 @@ color = Color(0.45, 0.75, 0.95, 1)
 [node name="Pipes" type="Node2D" parent="."]
 
 [node name="Ground" type="ColorRect" parent="."]
+mouse_filter = 2
 offset_top = 670.0
 offset_right = 480.0
 offset_bottom = 720.0

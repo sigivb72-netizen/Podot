@@ -18,6 +18,7 @@ position = Vector2(0, -400)
 shape = SubResource("1")
 
 [node name="Look" type="ColorRect" parent="Top"]
+mouse_filter = 2
 offset_left = -40.0
 offset_top = -800.0
 offset_right = 40.0
@@ -30,6 +31,7 @@ position = Vector2(0, 400)
 shape = SubResource("1")
 
 [node name="Look" type="ColorRect" parent="Bottom"]
+mouse_filter = 2
 offset_left = -40.0
 offset_right = 40.0
 offset_bottom = 800.0

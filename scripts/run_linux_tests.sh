@@ -113,7 +113,7 @@ PY
 	fi
 	rm -rf "$WORK"
 	FLAPPY_PREFIX=("${XVFB[@]}")
-	run_flappy flappy_gl --rendering-driver opengl3
+	run_flappy flappy_gl --rendering-driver opengl3 --single-window
 else
 	result SKIP e2e_gl "xvfb-run not installed"
 fi
