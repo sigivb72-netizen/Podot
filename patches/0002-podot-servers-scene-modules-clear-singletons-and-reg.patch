@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Wed, 11 Nov 2026 04:07:43 +0000
+Date: Wed, 11 Nov 2026 05:50:14 +0000
 Subject: [PATCH 2/5] podot: servers, scene, modules: clear singletons and
  registries on teardown
 
@@ -14,44 +14,57 @@ Touch gestures: ViewPanner accepts pan gestures (it handled them but
 let them propagate), and the 3D viewport pans with unmodified pan
 gestures on touchscreens (two-finger drag).
 
+InProcessGame (scene/main): runs a project's scene in a second SceneTree
+inside the editor process, next to the open editor (platforms that can't
+start a game process). Its root Window renders off-screen
+(Window::set_offscreen_root()); game code runs with editor hint off and
+scripting on; the editor's physics spaces are paused while it runs; the
+project's input actions and autoloads are added for the game's lifetime.
+
 Audio: the Dummy driver clears its buffer pointer in finish().
 AudioServer::finish() finishes every registered driver on each teardown,
 so a second in-process teardown freed the buffer again (abort when
 pressing Play on iPadOS).
 ---
- drivers/gles3/rasterizer_gles3.cpp              |  4 ++++
- drivers/metal/metal_objects_shared.cpp          |  4 +++-
- drivers/metal/metal_objects_shared.h            |  2 ++
- drivers/metal/rendering_device_driver_metal.cpp | 15 +++++++++++++++
- .../metal/rendering_device_driver_metal3.cpp    | 12 ++++++++++++
- .../gdscript_language_protocol.h                |  3 +++
- .../gltf/editor/editor_import_blend_runner.cpp  |  6 ++++++
- .../gltf/editor/editor_import_blend_runner.h    |  1 +
- .../godot_physics_2d/godot_physics_server_2d.h  |  6 +++++-
- .../godot_physics_3d/godot_physics_server_3d.h  |  6 +++++-
- .../navigation_2d/2d/nav_mesh_generator_2d.cpp  |  4 ++++
- .../navigation_3d/3d/nav_mesh_generator_3d.cpp  |  4 ++++
- .../3d/navigation_mesh_generator.cpp            |  4 ++++
- ...openxr_fb_display_refresh_rate_extension.cpp |  4 ++++
- platform/web/api/api.cpp                        |  6 +++++-
- scene/debugger/view_3d_controller.cpp           | 10 ++++++++++
- scene/gui/file_dialog.cpp                       |  5 ++++-
- scene/gui/view_panner.cpp                       |  2 ++
- scene/resources/resource_format_text.cpp        |  6 ++++++
- scene/resources/resource_format_text.h          |  1 +
- servers/audio/audio_driver_dummy.cpp            |  4 ++++
- servers/audio/audio_driver_dummy.h              |  6 +++++-
- servers/movie_writer/movie_writer.h             |  1 +
- servers/navigation_2d/navigation_server_2d.cpp  |  1 +
- servers/navigation_3d/navigation_server_3d.cpp  |  1 +
- servers/register_server_types.cpp               |  1 +
- .../renderer_rd/framebuffer_cache_rd.cpp        |  4 ++++
- .../renderer_rd/uniform_set_cache_rd.cpp        |  4 ++++
- servers/rendering/renderer_scene_cull.cpp       |  4 ++++
- servers/rendering/rendering_server_default.cpp  | 17 +++++++++++++++++
- servers/rendering/shader_types.cpp              |  6 ++++++
- servers/rendering/shader_types.h                |  1 +
- 32 files changed, 149 insertions(+), 6 deletions(-)
+ drivers/gles3/rasterizer_gles3.cpp            |   4 +
+ drivers/metal/metal_objects_shared.cpp        |   4 +-
+ drivers/metal/metal_objects_shared.h          |   2 +
+ .../metal/rendering_device_driver_metal.cpp   |  15 +
+ .../metal/rendering_device_driver_metal3.cpp  |  12 +
+ .../gdscript_language_protocol.h              |   3 +
+ .../editor/editor_import_blend_runner.cpp     |   6 +
+ .../gltf/editor/editor_import_blend_runner.h  |   1 +
+ .../godot_physics_server_2d.h                 |   6 +-
+ .../godot_physics_server_3d.h                 |   6 +-
+ .../2d/nav_mesh_generator_2d.cpp              |   4 +
+ .../3d/nav_mesh_generator_3d.cpp              |   4 +
+ .../3d/navigation_mesh_generator.cpp          |   4 +
+ ...enxr_fb_display_refresh_rate_extension.cpp |   4 +
+ platform/web/api/api.cpp                      |   6 +-
+ scene/debugger/view_3d_controller.cpp         |  10 +
+ scene/gui/file_dialog.cpp                     |   5 +-
+ scene/gui/view_panner.cpp                     |   2 +
+ scene/main/in_process_game.cpp                | 388 ++++++++++++++++++
+ scene/main/in_process_game.h                  | 105 +++++
+ scene/main/window.cpp                         |  18 +-
+ scene/main/window.h                           |   6 +
+ scene/resources/resource_format_text.cpp      |   6 +
+ scene/resources/resource_format_text.h        |   1 +
+ servers/audio/audio_driver_dummy.cpp          |   4 +
+ servers/audio/audio_driver_dummy.h            |   6 +-
+ servers/movie_writer/movie_writer.h           |   1 +
+ .../navigation_2d/navigation_server_2d.cpp    |   1 +
+ .../navigation_3d/navigation_server_3d.cpp    |   1 +
+ servers/register_server_types.cpp             |   1 +
+ .../renderer_rd/framebuffer_cache_rd.cpp      |   4 +
+ .../renderer_rd/uniform_set_cache_rd.cpp      |   4 +
+ servers/rendering/renderer_scene_cull.cpp     |   4 +
+ .../rendering/rendering_server_default.cpp    |  17 +
+ servers/rendering/shader_types.cpp            |   6 +
+ servers/rendering/shader_types.h              |   1 +
+ 36 files changed, 663 insertions(+), 9 deletions(-)
+ create mode 100644 scene/main/in_process_game.cpp
+ create mode 100644 scene/main/in_process_game.h
 
 diff --git a/drivers/gles3/rasterizer_gles3.cpp b/drivers/gles3/rasterizer_gles3.cpp
 index a4208f4..f9bb510 100644
@@ -367,6 +380,585 @@ index 4ed1152..477abb6 100644
  	}
  
  	Ref<InputEventScreenDrag> screen_drag = p_event;
+diff --git a/scene/main/in_process_game.cpp b/scene/main/in_process_game.cpp
+new file mode 100644
+index 0000000..66f7ced
+--- /dev/null
++++ b/scene/main/in_process_game.cpp
+@@ -0,0 +1,388 @@
++/**************************************************************************/
++/*  in_process_game.cpp                                                   */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#include "in_process_game.h"
++
++#include "core/config/engine.h"
++#include "core/config/project_settings.h"
++#include "core/input/input_map.h"
++#include "core/io/resource_loader.h"
++#include "core/io/resource_uid.h"
++#include "core/object/message_queue.h"
++#include "core/object/script_language.h"
++#include "core/os/os.h"
++#include "scene/main/scene_tree.h"
++#include "scene/main/window.h"
++#include "scene/resources/packed_scene.h"
++#include "scene/resources/world_2d.h"
++
++#ifndef _3D_DISABLED
++#include "scene/resources/3d/world_3d.h"
++#endif
++#ifndef PHYSICS_2D_DISABLED
++#include "servers/physics_2d/physics_server_2d.h"
++#endif
++#ifndef PHYSICS_3D_DISABLED
++#include "servers/physics_3d/physics_server_3d.h"
++#endif
++
++InProcessGame *InProcessGame::singleton = nullptr;
++
++InProcessGame::Scope::Scope() {
++	if (!InProcessGame::is_running() && !(singleton && singleton->stopping)) {
++		return;
++	}
++	active = true;
++	prev_editor_hint = Engine::get_singleton()->is_editor_hint();
++	prev_scripting = ScriptServer::is_scripting_enabled();
++	Engine::get_singleton()->set_editor_hint(false);
++	ScriptServer::set_scripting_enabled(true);
++}
++
++InProcessGame::Scope::~Scope() {
++	if (!active) {
++		return;
++	}
++	Engine::get_singleton()->set_editor_hint(prev_editor_hint);
++	ScriptServer::set_scripting_enabled(prev_scripting);
++}
++
++Window *InProcessGame::get_root() const {
++	return tree ? tree->get_root() : nullptr;
++}
++
++Ref<Texture2D> InProcessGame::get_texture() const {
++	Window *root = get_root();
++	return root ? root->get_texture() : Ref<Texture2D>();
++}
++
++void InProcessGame::set_size(const Size2i &p_size) {
++	Window *root = get_root();
++	if (root && p_size.x > 0 && p_size.y > 0 && root->get_size() != p_size) {
++		Scope scope;
++		root->set_size(p_size);
++	}
++}
++
++void InProcessGame::push_input(const Ref<InputEvent> &p_event) {
++	Window *root = get_root();
++	if (!root || p_event.is_null() || quit_requested) {
++		return;
++	}
++	Scope scope;
++	root->push_input(p_event);
++}
++
++void InProcessGame::_pause_host_physics(Node *p_node) {
++	Viewport *vp = Object::cast_to<Viewport>(p_node);
++	if (vp) {
++#ifndef PHYSICS_2D_DISABLED
++		Ref<World2D> w2d = vp->find_world_2d();
++		if (w2d.is_valid() && !paused_spaces_2d.has(w2d->get_space()) && PhysicsServer2D::get_singleton()->space_is_active(w2d->get_space())) {
++			paused_spaces_2d.insert(w2d->get_space());
++			PhysicsServer2D::get_singleton()->space_set_active(w2d->get_space(), false);
++		}
++#endif
++#if !defined(_3D_DISABLED) && !defined(PHYSICS_3D_DISABLED)
++		Ref<World3D> w3d = vp->find_world_3d();
++		if (w3d.is_valid() && !paused_spaces_3d.has(w3d->get_space()) && PhysicsServer3D::get_singleton()->space_is_active(w3d->get_space())) {
++			paused_spaces_3d.insert(w3d->get_space());
++			PhysicsServer3D::get_singleton()->space_set_active(w3d->get_space(), false);
++		}
++#endif
++	}
++	for (int i = 0; i < p_node->get_child_count(); i++) {
++		_pause_host_physics(p_node->get_child(i));
++	}
++}
++
++void InProcessGame::_merge_project_input_map() {
++	// The editor's InputMap has the built-in actions (InputMap::load_default()); add the project's
++	// actions and events (as InputMap::load_from_project_settings() does for a game), and remember
++	// them to remove them when the game stops.
++	InputMap *im = InputMap::get_singleton();
++	List<PropertyInfo> pinfo;
++	ProjectSettings::get_singleton()->get_property_list(&pinfo);
++	for (const PropertyInfo &pi : pinfo) {
++		if (!pi.name.begins_with("input/")) {
++			continue;
++		}
++		const StringName name = pi.name.substr(pi.name.find_char('/') + 1);
++		Dictionary action = GLOBAL_GET(pi.name);
++		if (!action.has("events")) {
++			continue;
++		}
++		if (!im->has_action(name)) {
++			im->add_action(name, action.has("deadzone") ? (float)action["deadzone"] : InputMap::DEFAULT_DEADZONE);
++			added_actions.push_back(name);
++		}
++		Array events = action["events"];
++		for (int i = 0; i < events.size(); i++) {
++			Ref<InputEvent> ev = events[i];
++			if (ev.is_null() || im->action_has_event(name, ev)) {
++				continue;
++			}
++			im->action_add_event(name, ev);
++			if (!added_actions.find(name)) {
++				added_action_events.push_back(Pair<StringName, Ref<InputEvent>>(name, ev));
++			}
++		}
++	}
++}
++
++void InProcessGame::_restore_input_map() {
++	InputMap *im = InputMap::get_singleton();
++	for (const Pair<StringName, Ref<InputEvent>> &E : added_action_events) {
++		if (im->has_action(E.first) && im->action_has_event(E.first, E.second)) {
++			im->action_erase_event(E.first, E.second);
++		}
++	}
++	for (const StringName &E : added_actions) {
++		if (im->has_action(E)) {
++			im->erase_action(E);
++		}
++	}
++	added_actions.clear();
++	added_action_events.clear();
++}
++
++void InProcessGame::_load_autoloads() {
++	// Same as Main::start() for a game.
++	const HashMap<StringName, ProjectSettings::AutoloadInfo> &autoloads = ProjectSettings::get_singleton()->get_autoload_list();
++	List<Node *> to_add;
++	for (const KeyValue<StringName, ProjectSettings::AutoloadInfo> &E : autoloads) {
++		const ProjectSettings::AutoloadInfo &info = E.value;
++		Node *n = nullptr;
++		const String path = ResourceUID::ensure_path(info.path);
++		if (ResourceLoader::get_resource_type(path) == "PackedScene") {
++			Ref<PackedScene> scn = ResourceLoader::load(path);
++			if (scn.is_valid()) {
++				n = scn->instantiate();
++			}
++		} else {
++			Ref<Script> script_res = ResourceLoader::load(path);
++			if (script_res.is_valid() && ClassDB::is_parent_class(script_res->get_instance_base_type(), "Node")) {
++				n = Object::cast_to<Node>(ClassDB::instantiate(script_res->get_instance_base_type()));
++				if (n) {
++					n->set_script(script_res);
++				}
++			}
++		}
++		ERR_CONTINUE_MSG(!n, vformat("Failed to instantiate an autoload: %s.", info.path));
++		n->set_name(info.name);
++		to_add.push_back(n);
++		if (info.is_singleton) {
++			for (int i = 0; i < ScriptServer::get_language_count(); i++) {
++				ScriptServer::get_language(i)->add_named_global_constant(info.name, n);
++			}
++			autoload_globals.push_back(info.name);
++		}
++	}
++	for (Node *E : to_add) {
++		tree->get_root()->add_child(E);
++	}
++}
++
++Error InProcessGame::start(const String &p_scene, const Size2i &p_size, Node *p_host_root, const Callable &p_finished) {
++	ERR_FAIL_COND_V_MSG(is_running(), ERR_ALREADY_IN_USE, "A game is already running in the editor.");
++	if (!singleton) {
++		singleton = memnew(InProcessGame);
++	}
++	InProcessGame *g = singleton;
++	g->quit_requested = false;
++	g->stopping = false;
++	g->exit_code = 0;
++	g->finished_callback = p_finished;
++	g->start_ticks = OS::get_singleton()->get_ticks_msec();
++
++	// Run any pending editor work in editor mode before switching.
++	MessageQueue::get_singleton()->flush();
++
++	// The game needs a frame every frame (the editor otherwise only redraws on changes).
++	g->saved_low_processor_mode = OS::get_singleton()->is_in_low_processor_usage_mode();
++	OS::get_singleton()->set_low_processor_usage_mode(false);
++
++	// Editor scenes must not be simulated while the physics servers run for the game.
++	if (p_host_root) {
++		g->_pause_host_physics(p_host_root);
++	}
++#ifndef PHYSICS_2D_DISABLED
++	PhysicsServer2D::get_singleton()->set_active(true);
++#endif
++#ifndef PHYSICS_3D_DISABLED
++	PhysicsServer3D::get_singleton()->set_active(true);
++#endif
++	g->_merge_project_input_map();
++
++	// Create the tree in game mode (SceneTree reads game settings when constructed).
++	const bool prev_hint = Engine::get_singleton()->is_editor_hint();
++	const bool prev_scripting = ScriptServer::is_scripting_enabled();
++	Engine::get_singleton()->set_editor_hint(false);
++	ScriptServer::set_scripting_enabled(true);
++
++	g->tree = memnew(SceneTree);
++	Window *root = g->tree->get_root();
++	root->set_offscreen_root(true);
++	root->set_size(p_size.x > 0 && p_size.y > 0 ? p_size : Size2i(GLOBAL_GET("display/window/size/viewport_width"), GLOBAL_GET("display/window/size/viewport_height")));
++	root->set_embedding_subwindows(true);
++
++	// Window stretch and canvas settings, as in Main::start() for a game.
++	{
++		const String stretch_mode = GLOBAL_GET("display/window/stretch/mode");
++		const String stretch_aspect = GLOBAL_GET("display/window/stretch/aspect");
++		const String stretch_scale_mode = GLOBAL_GET("display/window/stretch/scale_mode");
++		Window::ContentScaleMode cs_sm = Window::CONTENT_SCALE_MODE_DISABLED;
++		if (stretch_mode == "canvas_items") {
++			cs_sm = Window::CONTENT_SCALE_MODE_CANVAS_ITEMS;
++		} else if (stretch_mode == "viewport") {
++			cs_sm = Window::CONTENT_SCALE_MODE_VIEWPORT;
++		}
++		Window::ContentScaleAspect cs_aspect = Window::CONTENT_SCALE_ASPECT_IGNORE;
++		if (stretch_aspect == "keep") {
++			cs_aspect = Window::CONTENT_SCALE_ASPECT_KEEP;
++		} else if (stretch_aspect == "keep_width") {
++			cs_aspect = Window::CONTENT_SCALE_ASPECT_KEEP_WIDTH;
++		} else if (stretch_aspect == "keep_height") {
++			cs_aspect = Window::CONTENT_SCALE_ASPECT_KEEP_HEIGHT;
++		} else if (stretch_aspect == "expand") {
++			cs_aspect = Window::CONTENT_SCALE_ASPECT_EXPAND;
++		}
++		root->set_content_scale_mode(cs_sm);
++		root->set_content_scale_aspect(cs_aspect);
++		root->set_content_scale_stretch(stretch_scale_mode == "integer" ? Window::CONTENT_SCALE_STRETCH_INTEGER : Window::CONTENT_SCALE_STRETCH_FRACTIONAL);
++		root->set_content_scale_size(Size2i(GLOBAL_GET("display/window/size/viewport_width"), GLOBAL_GET("display/window/size/viewport_height")));
++		root->set_content_scale_factor(GLOBAL_GET("display/window/stretch/scale"));
++		root->set_snap_controls_to_pixels(GLOBAL_GET("gui/common/snap_controls_to_pixels"));
++		root->set_default_canvas_item_texture_filter(Viewport::DefaultCanvasItemTextureFilter(int(GLOBAL_GET("rendering/textures/canvas_textures/default_texture_filter"))));
++		root->set_default_canvas_item_texture_repeat(Viewport::DefaultCanvasItemTextureRepeat(int(GLOBAL_GET("rendering/textures/canvas_textures/default_texture_repeat"))));
++	}
++
++	g->tree->initialize();
++	g->_load_autoloads();
++
++	Error err = OK;
++	Ref<PackedScene> scene_data = ResourceLoader::load(p_scene);
++	Node *scene = scene_data.is_valid() ? scene_data->instantiate() : nullptr;
++	if (scene) {
++		g->tree->add_current_scene(scene);
++	} else {
++		err = ERR_CANT_OPEN;
++	}
++	MessageQueue::get_singleton()->flush();
++
++	Engine::get_singleton()->set_editor_hint(prev_hint);
++	ScriptServer::set_scripting_enabled(prev_scripting);
++
++	if (err != OK) {
++		ERR_PRINT("Failed to load the scene to run: " + p_scene + ".");
++		g->finished_callback = Callable();
++		stop();
++		return err;
++	}
++	print_line(vformat("Running %s next to the editor.", p_scene));
++	return OK;
++}
++
++void InProcessGame::stop() {
++	if (!singleton || !singleton->tree || singleton->stopping) {
++		return;
++	}
++	InProcessGame *g = singleton;
++	g->stopping = true;
++	{
++		Scope scope;
++		g->tree->finalize();
++		memdelete(g->tree);
++		g->tree = nullptr;
++		MessageQueue::get_singleton()->flush();
++	}
++	for (const StringName &E : g->autoload_globals) {
++		for (int i = 0; i < ScriptServer::get_language_count(); i++) {
++			ScriptServer::get_language(i)->remove_named_global_constant(E);
++		}
++	}
++	g->autoload_globals.clear();
++	g->_restore_input_map();
++
++#ifndef PHYSICS_2D_DISABLED
++	for (const RID &E : g->paused_spaces_2d) {
++		PhysicsServer2D::get_singleton()->space_set_active(E, true);
++	}
++	PhysicsServer2D::get_singleton()->set_active(!Engine::get_singleton()->is_editor_hint());
++#endif
++#ifndef PHYSICS_3D_DISABLED
++	for (const RID &E : g->paused_spaces_3d) {
++		PhysicsServer3D::get_singleton()->space_set_active(E, true);
++	}
++	PhysicsServer3D::get_singleton()->set_active(!Engine::get_singleton()->is_editor_hint());
++#endif
++	g->paused_spaces_2d.clear();
++	g->paused_spaces_3d.clear();
++	OS::get_singleton()->set_low_processor_usage_mode(g->saved_low_processor_mode);
++	g->stopping = false;
++	print_line(vformat("--- Game stopped after %.1f s (exit code %d) ---", (OS::get_singleton()->get_ticks_msec() - g->start_ticks) / 1000.0, g->exit_code));
++
++	Callable cb = g->finished_callback;
++	g->finished_callback = Callable();
++	if (cb.is_valid()) {
++		cb.call_deferred();
++	}
++}
++
++void InProcessGame::physics_frame(double p_step) {
++	if (!is_running() || singleton->quit_requested) {
++		return;
++	}
++	Scope scope;
++	SceneTree *t = singleton->tree;
++	t->iteration_prepare();
++	if (t->physics_process(p_step)) {
++		singleton->quit_requested = true;
++	}
++	t->iteration_end();
++}
++
++void InProcessGame::process_frame(double p_step) {
++	if (!is_running()) {
++		return;
++	}
++	if (!singleton->quit_requested) {
++		Scope scope;
++		if (singleton->tree->process(p_step)) {
++			singleton->quit_requested = true;
++		}
++	}
++	if (singleton->quit_requested) {
++		// SceneTree::quit() stores the exit code in OS.
++		singleton->exit_code = OS::get_singleton()->get_exit_code();
++		OS::get_singleton()->set_exit_code(EXIT_SUCCESS);
++		stop();
++	}
++}
+diff --git a/scene/main/in_process_game.h b/scene/main/in_process_game.h
+new file mode 100644
+index 0000000..64f6bbd
+--- /dev/null
++++ b/scene/main/in_process_game.h
+@@ -0,0 +1,105 @@
++/**************************************************************************/
++/*  in_process_game.h                                                     */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#pragma once
++
++#include "core/input/input_event.h"
++#include "core/templates/hash_set.h"
++#include "core/templates/list.h"
++#include "core/templates/pair.h"
++#include "core/templates/rid.h"
++#include "core/variant/callable.h"
++
++class Node;
++class SceneTree;
++class Texture2D;
++class Window;
++
++// Runs a project's scene in a second SceneTree inside the editor process, next to the editor
++// (the iPadOS editor can't start a game process). The game's root window renders off-screen; the
++// editor shows its texture in a floating window and forwards input to it.
++//
++// While game code runs (loading, input, physics and process frames), the engine is switched to
++// "game mode": Engine::is_editor_hint() is false and scripting is enabled, so the project's scripts
++// get real instances and behave as in a running game. Everything else runs in editor mode.
++class InProcessGame {
++	static InProcessGame *singleton;
++
++	SceneTree *tree = nullptr;
++	bool quit_requested = false;
++	bool stopping = false;
++	int exit_code = 0;
++	double start_ticks = 0;
++	Callable finished_callback;
++
++	// Editor state saved while the game runs.
++	bool saved_low_processor_mode = false;
++	HashSet<RID> paused_spaces_2d;
++	HashSet<RID> paused_spaces_3d;
++	List<StringName> added_actions;
++	List<Pair<StringName, Ref<InputEvent>>> added_action_events;
++	List<StringName> autoload_globals;
++
++	void _pause_host_physics(Node *p_node);
++	void _merge_project_input_map();
++	void _restore_input_map();
++	void _load_autoloads();
++
++public:
++	// Switches the engine to game mode while a game runs (no-op otherwise).
++	class Scope {
++		bool active = false;
++		bool prev_editor_hint = false;
++		bool prev_scripting = false;
++
++	public:
++		Scope();
++		~Scope();
++	};
++
++	static InProcessGame *get_singleton() { return singleton; }
++	static bool is_running() { return singleton && singleton->tree; }
++
++	// Starts p_scene (a scene path). p_host_root: the editor's root, whose physics spaces are paused
++	// while the game runs. p_finished is called (deferred) when the game quits by itself.
++	static Error start(const String &p_scene, const Size2i &p_size, Node *p_host_root, const Callable &p_finished);
++	static void stop();
++
++	SceneTree *get_tree() const { return tree; }
++	Window *get_root() const;
++	Ref<Texture2D> get_texture() const;
++	void set_size(const Size2i &p_size);
++	void push_input(const Ref<InputEvent> &p_event);
++	int get_exit_code() const { return exit_code; }
++
++	// Called by Main::iteration().
++	static void physics_frame(double p_step);
++	static void process_frame(double p_step);
++};
+diff --git a/scene/main/window.cpp b/scene/main/window.cpp
+index bc56ddb..33bcad5 100644
+--- a/scene/main/window.cpp
++++ b/scene/main/window.cpp
+@@ -410,6 +410,12 @@ void Window::move_to_center() {
+ 	}
+ }
+ 
++void Window::set_offscreen_root(bool p_enabled) {
++	ERR_MAIN_THREAD_GUARD;
++	ERR_FAIL_COND_MSG(is_inside_tree(), "set_offscreen_root() must be called before the window enters the tree.");
++	offscreen_root = p_enabled;
++}
++
+ void Window::set_size(const Size2i &p_size) {
+ 	ERR_MAIN_THREAD_GUARD;
+ #if defined(ANDROID_ENABLED)
+@@ -1676,7 +1682,13 @@ void Window::_notification(int p_what) {
+ 				}
+ 
+ 			} else {
+-				if (!get_parent()) {
++				if (!get_parent() && offscreen_root) {
++					visible = true;
++					focused = true;
++					mouse_in_window = true;
++					RS::get_singleton()->viewport_set_update_mode(get_viewport_rid(), RSE::VIEWPORT_UPDATE_ALWAYS);
++					_update_viewport_size();
++				} else if (!get_parent()) {
+ 					// It's the root window!
+ 					visible = true; // Always visible.
+ 					window_id = DisplayServerEnums::MAIN_WINDOW_ID;
+@@ -1718,7 +1730,7 @@ void Window::_notification(int p_what) {
+ 				_make_transient();
+ 			}
+ 			if (visible) {
+-				if (window_id != DisplayServerEnums::MAIN_WINDOW_ID && get_tree() && get_tree()->is_accessibility_supported()) {
++				if (window_id != DisplayServerEnums::MAIN_WINDOW_ID && !offscreen_root && get_tree() && get_tree()->is_accessibility_supported()) {
+ 					get_tree()->_accessibility_force_update();
+ 					_accessibility_notify_enter(this);
+ 					if (!embedder) {
+@@ -1775,7 +1787,7 @@ void Window::_notification(int p_what) {
+ 
+ 			set_theme_context(nullptr, false);
+ 
+-			if (visible && window_id != DisplayServerEnums::MAIN_WINDOW_ID) {
++			if (visible && window_id != DisplayServerEnums::MAIN_WINDOW_ID && !offscreen_root) {
+ 				if (get_tree() && get_tree()->is_accessibility_supported()) {
+ 					_accessibility_notify_exit(this);
+ 					if (!embedder) {
+diff --git a/scene/main/window.h b/scene/main/window.h
+index 9c7284d..ed671c8 100644
+--- a/scene/main/window.h
++++ b/scene/main/window.h
+@@ -257,6 +257,7 @@ private:
+ 	virtual bool _can_consume_input_events() const override;
+ 
+ 	bool mouse_in_window = false;
++	bool offscreen_root = false;
+ 	void _update_mouse_over(Vector2 p_pos) override;
+ 	void _mouse_leave_viewport() override;
+ 
+@@ -325,6 +326,11 @@ public:
+ 	void move_to_center();
+ 
+ 	void set_size(const Size2i &p_size);
++	// Root window of a secondary SceneTree that renders off-screen (e.g. a game running inside the
++	// editor process): it doesn't take over the display server's main window; its viewport texture
++	// is shown by the host and input is pushed to it with push_input().
++	void set_offscreen_root(bool p_enabled);
++	bool is_offscreen_root() const { return offscreen_root; }
+ 	Size2i get_size() const;
+ 	void reset_size();
+ 
 diff --git a/scene/resources/resource_format_text.cpp b/scene/resources/resource_format_text.cpp
 index 53eed0a..92c4e7c 100644
 --- a/scene/resources/resource_format_text.cpp

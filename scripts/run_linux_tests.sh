@@ -44,22 +44,50 @@ PY
 else
 	result FAIL e2e_in_process "editor exit code $CODE, see e2e.log"
 fi
-if grep -q "Running the project in-process" "$RESULTS/e2e.log" && grep -q "\[game\] done, quitting" "$RESULTS/e2e.log" && grep -q "\[e2e\] editor is back after running the game" "$RESULTS/e2e.log"; then
-	result PASS in_process_editor_game_editor "editor -> game -> editor in one process"
+if grep -q "next to the editor" "$RESULTS/e2e.log" && grep -q "\[game\] done, quitting" "$RESULTS/e2e.log" && grep -q "\[e2e\] editor is back after running the game" "$RESULTS/e2e.log"; then
+	result PASS in_process_game_window "game ran in the editor process next to the open editor"
 else
-	result FAIL in_process_editor_game_editor "see e2e.log"
+	result FAIL in_process_game_window "see e2e.log"
 fi
 if grep -q "\[e2e\] editor is back after a restart" "$RESULTS/e2e.log"; then
 	result PASS in_process_editor_restart "Reload Current Project relaunched the editor in-process"
 else
 	result FAIL in_process_editor_restart "see e2e.log"
 fi
-if grep -q -- "--- Game session finished" "$RESULTS/e2e.log"; then
+if grep -q -- "--- Game stopped after" "$RESULTS/e2e.log"; then
 	result PASS game_output_shown_in_editor_log
 else
 	result FAIL game_output_shown_in_editor_log
 fi
 rm -rf "$WORK"
+
+# --- Floppy Bird played in the game window next to the editor ---
+# Usage: run_flappy <label> [godot args]; FLAPPY_PREFIX: command prefix array (e.g. xvfb-run).
+FLAPPY_PREFIX=(env)
+run_flappy() {
+	local label="$1"; shift
+	local work; work="$(mktemp -d)"
+	cp -R "$ROOT/tests/projects/flappy" "$work/flappy"
+	timeout 600 "${FLAPPY_PREFIX[@]}" "$GODOT_BIN" "$@" --editor --path "$work/flappy" --import > "$RESULTS/${label}_import.log" 2>&1
+	mkdir -p "$work/flappy/.test_results" && touch "$work/flappy/.test_results/PODOT_FLAPPY"
+	GODOT_IN_PROCESS_INSTANCES=1 timeout 900 "${FLAPPY_PREFIX[@]}" "$GODOT_BIN" "$@" --editor --path "$work/flappy" > "$RESULTS/${label}.log" 2>&1
+	local code=$?
+	cp -R "$work/flappy/.test_results" "$RESULTS/${label}_results" 2>/dev/null
+	local j="$work/flappy/.test_results/flappy.json"
+	if [ -f "$j" ] && python3 -c "import json,sys; sys.exit(0 if json.load(open('$j'))['done'] else 1)"; then
+		python3 - "$j" "$label" <<'PY' | tee -a "$SUMMARY"
+import json, sys
+d = json.load(open(sys.argv[1]))
+for name, c in sorted(d["checks"].items()):
+    print(("PASS" if c["ok"] else "FAIL"), sys.argv[2] + ":" + name, c["detail"][:160].replace("\n", " "))
+PY
+		result PASS "${label}_exit" "exit code $code"
+	else
+		result FAIL "$label" "exit code $code, see ${label}.log"
+	fi
+	rm -rf "$work"
+}
+run_flappy flappy --headless
 
 # --- Same scenario with a real renderer (OpenGL ES 3 / Compatibility on Mesa) and display server ---
 if command -v xvfb-run >/dev/null; then
@@ -84,6 +112,8 @@ PY
 		result FAIL e2e_gl_in_process "exit code $CODE, see e2e_gl.log"
 	fi
 	rm -rf "$WORK"
+	FLAPPY_PREFIX=("${XVFB[@]}")
+	run_flappy flappy_gl --rendering-driver opengl3
 else
 	result SKIP e2e_gl "xvfb-run not installed"
 fi

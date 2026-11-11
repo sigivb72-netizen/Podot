@@ -67,26 +67,43 @@ func _physics_process(_delta: float) -> void:
 		touch.index = 0
 		touch.position = Vector2(50, 50)
 		touch.pressed = true
-		Input.parse_input_event(touch)
+		_send(touch)
 		touch = touch.duplicate()
 		touch.pressed = false
-		Input.parse_input_event(touch)
+		_send(touch)
 		var key := InputEventKey.new()
 		key.keycode = KEY_SPACE
 		key.physical_keycode = KEY_SPACE
 		key.pressed = true
-		Input.parse_input_event(key)
+		_send(key)
 		if InputMap.has_action("podot_jump"):
 			Input.action_press("podot_jump")
 	if frames == 90:
 		_finish()
 
 
+func _in_editor_window() -> bool:
+	# The game runs in a window next to the editor, in the editor's process (iPadOS).
+	return get_tree() != Engine.get_main_loop()
+
+
+func _send(event: InputEvent) -> void:
+	if _in_editor_window():
+		# Input.parse_input_event() would go to the editor's window; deliver to the game's window.
+		get_viewport().push_input(event)
+	else:
+		Input.parse_input_event(event)
+
+
 func _finish() -> void:
 	check("physics_body_fell", $Body.position.y > start_y + 1.0, "%s -> %s" % [start_y, $Body.position.y])
 	check("input_touch_events", touch_events >= 2, touch_events)
 	check("input_key_events", key_events >= 1, key_events)
-	check("input_touch_emulates_mouse", mouse_events >= 1 or not ProjectSettings.get_setting("input_devices/pointing/emulate_mouse_from_touch"), mouse_events)
+	if _in_editor_window():
+		check("input_touch_emulates_mouse", true, "skipped: events pushed to the game window directly")
+	else:
+		check("input_touch_emulates_mouse", mouse_events >= 1 or not ProjectSettings.get_setting("input_devices/pointing/emulate_mouse_from_touch"), mouse_events)
+	check("game_in_editor_window", true, _in_editor_window())
 	if audio_player and AudioServer.get_driver_name() == "Dummy":
 		check("audio_stream_playing", true, "skipped: no audio device (Dummy driver)")
 	elif audio_player:

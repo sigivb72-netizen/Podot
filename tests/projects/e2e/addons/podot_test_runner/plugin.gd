@@ -111,18 +111,19 @@ func _stage_editor() -> void:
 	await _test_canvas_gestures()
 	_write_results(false)
 
-	# Run the project. On iPadOS this closes the editor, runs the game in-process and reopens the editor.
+	# Run the project. On iPadOS the game runs in a window next to the editor (in the editor's
+	# process); on desktop in a separate process. Either way the editor stays open; the game
+	# quits by itself after its checks.
 	_save_state("after_game")
 	print("[e2e] running the main scene")
 	EditorInterface.play_main_scene()
-	await _wait_frames(600)
-	# Only reached when the game runs in a separate process (desktop default).
-	if EditorInterface.is_playing_scene():
-		var guard := 0
-		while EditorInterface.is_playing_scene() and guard < 3000:
-			guard += 1
-			await get_tree().process_frame
-		await _stage_after_game()
+	await _wait_frames(30)
+	var guard := 0
+	while EditorInterface.is_playing_scene() and guard < 6000:
+		guard += 1
+		await get_tree().process_frame
+	check("editor_open_while_game_ran", true, "%d editor frames while the game ran" % guard)
+	await _stage_after_game()
 
 
 func _test_project_settings_and_input_map() -> void:

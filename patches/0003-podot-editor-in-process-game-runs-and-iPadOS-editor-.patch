@@ -1,13 +1,16 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Wed, 11 Nov 2026 04:07:44 +0000
+Date: Wed, 11 Nov 2026 05:50:14 +0000
 Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  adaptations
 
-- EditorRun/EditorNode: when instances run in-process, the editor saves,
-  shuts down (deferred, so addons calling play_main_scene() are safe), the
-  game runs in the same process, and the editor reopens with the same
-  scenes and shows the game output in the Output dock.
+- Play on platforms without game processes (in-process instances): the
+  game runs inside the editor process (InProcessGame) and is shown in a
+  floating, movable and resizable game window next to the editor, like
+  the Android editor's game window (InProcessGameWindow: Stop, Restart,
+  Maximize; touch, mouse and keyboard forwarded to the game). The editor
+  stays open and usable. The previous mode (editor shuts down while the
+  game runs) is kept in EditorNode::run_game_in_process().
 - ~EditorNode restores the process-wide state the editor changed (load and
   save callbacks, placeholders, error notifiers, dialog defaults, ...), and
   editor singletons/registries are cleared, so the next instance (a game,
@@ -42,11 +45,11 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  editor/debugger/editor_debugger_node.h        |   1 +
  editor/docks/editor_dock_manager.cpp          |   6 +
  editor/docks/editor_dock_manager.h            |   1 +
- editor/docks/filesystem_dock.cpp              |  46 +++-
+ editor/docks/filesystem_dock.cpp              |  46 ++-
  editor/docks/filesystem_dock.h                |   6 +
  editor/editor_interface.cpp                   |   6 +
  editor/editor_interface.h                     |   1 +
- editor/editor_node.cpp                        | 220 ++++++++++++++++--
+ editor/editor_node.cpp                        | 225 ++++++++++++-
  editor/editor_node.h                          |  19 +-
  editor/editor_undo_redo_manager.cpp           |   4 +
  editor/export/editor_export.cpp               |   6 +
@@ -65,16 +68,18 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  editor/inspector/editor_resource_preview.cpp  |  11 +
  editor/inspector/editor_resource_preview.h    |   4 +
  editor/plugins/editor_plugin.h                |   4 +
- .../project_manager/project_device_limits.cpp | 144 ++++++++++++
- .../project_manager/project_device_limits.h   |  60 +++++
- editor/project_manager/project_manager.cpp    |  32 ++-
+ .../project_manager/project_device_limits.cpp | 144 +++++++++
+ .../project_manager/project_device_limits.h   |  60 ++++
+ editor/project_manager/project_manager.cpp    |  32 +-
  editor/project_manager/project_manager.h      |   3 +
  editor/register_editor_types.cpp              |   2 +
- editor/run/editor_run.cpp                     |  22 ++
+ editor/run/editor_run.cpp                     |  32 ++
  editor/run/editor_run_bar.cpp                 |   6 +
  editor/run/editor_run_bar.h                   |   1 +
  editor/run/game_view_plugin.cpp               |  18 +-
  editor/run/game_view_plugin.h                 |   9 +-
+ editor/run/in_process_game_window.cpp         | 303 ++++++++++++++++++
+ editor/run/in_process_game_window.h           |  90 ++++++
  editor/run/run_instances_dialog.cpp           |   6 +
  editor/run/run_instances_dialog.h             |   1 +
  editor/scene/2d/tiles/tile_set_editor.cpp     |   6 +
@@ -105,9 +110,11 @@ Subject: [PATCH 3/5] podot: editor: in-process game runs and iPadOS editor
  editor/shader/shader_file_editor_plugin.cpp   |   6 +
  editor/shader/shader_file_editor_plugin.h     |   1 +
  .../version_control_editor_plugin.cpp         |   4 +
- 81 files changed, 839 insertions(+), 47 deletions(-)
+ 83 files changed, 1247 insertions(+), 47 deletions(-)
  create mode 100644 editor/project_manager/project_device_limits.cpp
  create mode 100644 editor/project_manager/project_device_limits.h
+ create mode 100644 editor/run/in_process_game_window.cpp
+ create mode 100644 editor/run/in_process_game_window.h
 
 diff --git a/editor/animation/animation_blend_space_1d_editor.cpp b/editor/animation/animation_blend_space_1d_editor.cpp
 index b17226c..8f72e98 100644
@@ -501,10 +508,18 @@ index 9bb588f..26535d0 100644
 +	~EditorInterface();
  };
 diff --git a/editor/editor_node.cpp b/editor/editor_node.cpp
-index 5bc4649..d8f4458 100644
+index 5bc4649..33e3de9 100644
 --- a/editor/editor_node.cpp
 +++ b/editor/editor_node.cpp
-@@ -201,7 +201,7 @@
+@@ -123,6 +123,7 @@
+ #include "editor/project_upgrade/project_upgrade_tool.h"
+ #include "editor/run/editor_run.h"
+ #include "editor/run/editor_run_bar.h"
++#include "editor/run/in_process_game_window.h"
+ #include "editor/run/game_view_plugin.h"
+ #include "editor/scene/3d/material_3d_conversion_plugins.h"
+ #include "editor/scene/3d/mesh_library_editor_plugin.h"
+@@ -201,7 +202,7 @@
  #include "servers/physics_3d/physics_server_3d.h"
  #endif // PHYSICS_3D_DISABLED
  
@@ -513,7 +528,7 @@ index 5bc4649..d8f4458 100644
  #include "editor/gui/touch_actions_panel.h"
  #endif // ANDROID_ENABLED
  
-@@ -420,12 +420,18 @@ void EditorNode::shortcut_input(const Ref<InputEvent> &p_event) {
+@@ -420,12 +421,18 @@ void EditorNode::shortcut_input(const Ref<InputEvent> &p_event) {
  			editor_main_screen->select(EditorMainScreen::EDITOR_3D);
  		} else if (ED_IS_SHORTCUT("editor/editor_script", p_event)) {
  			editor_main_screen->select(EditorMainScreen::EDITOR_SCRIPT);
@@ -532,7 +547,7 @@ index 5bc4649..d8f4458 100644
  		} else if (ED_IS_SHORTCUT("editor/editor_next", p_event)) {
  			editor_main_screen->select_next();
  		} else if (ED_IS_SHORTCUT("editor/editor_prev", p_event)) {
-@@ -1043,9 +1049,26 @@ void EditorNode::_notification(int p_what) {
+@@ -1043,9 +1050,26 @@ void EditorNode::_notification(int p_what) {
  				EditorToaster::get_singleton()->popup_str(TTR("Recovery Mode is enabled. Editor functionality has been restricted."), EditorToaster::SEVERITY_WARNING);
  			}
  
@@ -559,7 +574,7 @@ index 5bc4649..d8f4458 100644
  		case NOTIFICATION_APPLICATION_FOCUS_IN: {
  			// Restore the original FPS cap after focusing back on the editor.
  			OS::get_singleton()->set_low_processor_usage_mode_sleep_usec(int(EDITOR_GET("interface/editor/timers/low_processor_mode_sleep_usec")));
-@@ -1170,7 +1193,7 @@ void EditorNode::_notification(int p_what) {
+@@ -1170,7 +1194,7 @@ void EditorNode::_notification(int p_what) {
  				EditorHelpHighlighter::get_singleton()->reset_cache();
  			}
  #endif
@@ -568,7 +583,7 @@ index 5bc4649..d8f4458 100644
  			if (EditorSettings::get_singleton()->check_changed_settings_in_group("interface/touchscreen/touch_actions_panel")) {
  				_touch_actions_panel_mode_changed();
  			}
-@@ -3871,7 +3894,7 @@ void EditorNode::_menu_option_confirm(int p_option, bool p_confirmed) {
+@@ -3871,7 +3895,7 @@ void EditorNode::_menu_option_confirm(int p_option, bool p_confirmed) {
  			export_template_manager->popup_manager();
  		} break;
  		case EDITOR_CONFIGURE_FBX_IMPORTER: {
@@ -577,7 +592,7 @@ index 5bc4649..d8f4458 100644
  			fbx_importer_manager->show_dialog();
  #endif
  		} break;
-@@ -6784,6 +6807,130 @@ void EditorNode::_restart_editor(bool p_goto_project_manager) {
+@@ -6784,6 +6808,130 @@ void EditorNode::_restart_editor(bool p_goto_project_manager) {
  	OS::get_singleton()->set_restart_on_exit(true, args);
  }
  
@@ -708,7 +723,7 @@ index 5bc4649..d8f4458 100644
  void EditorNode::_scene_tab_closed(int p_tab) {
  	current_menu_option = SCENE_TAB_CLOSE;
  	tab_closing_idx = p_tab;
-@@ -7050,6 +7197,14 @@ void EditorNode::_dropped_files(const Vector<String> &p_files) {
+@@ -7050,6 +7198,14 @@ void EditorNode::_dropped_files(const Vector<String> &p_files) {
  	EditorFileSystem::get_singleton()->scan_changes();
  }
  
@@ -723,7 +738,7 @@ index 5bc4649..d8f4458 100644
  void EditorNode::_add_dropped_files_recursive(const Vector<String> &p_files, String to_path) {
  	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
  	ERR_FAIL_COND(dir.is_null());
-@@ -7849,6 +8004,14 @@ void EditorNode::_resource_loaded(Ref<Resource> p_resource, const String &p_path
+@@ -7849,6 +8005,14 @@ void EditorNode::_resource_loaded(Ref<Resource> p_resource, const String &p_path
  
  void EditorNode::_feature_profile_changed() {
  	Ref<EditorFeatureProfile> profile = feature_profile_manager->get_current_profile();
@@ -738,7 +753,7 @@ index 5bc4649..d8f4458 100644
  	if (profile.is_valid()) {
  		editor_dock_manager->set_dock_enabled(SignalsDock::get_singleton(), !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_SIGNALS_DOCK));
  		editor_dock_manager->set_dock_enabled(GroupsDock::get_singleton(), !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_GROUPS_DOCK));
-@@ -7860,11 +8023,11 @@ void EditorNode::_feature_profile_changed() {
+@@ -7860,11 +8024,11 @@ void EditorNode::_feature_profile_changed() {
  
  		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_3D, !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_3D));
  		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_SCRIPT, !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_SCRIPT));
@@ -752,7 +767,7 @@ index 5bc4649..d8f4458 100644
  		}
  	} else {
  		editor_dock_manager->set_dock_enabled(ImportDock::get_singleton(), true);
-@@ -7874,11 +8037,11 @@ void EditorNode::_feature_profile_changed() {
+@@ -7874,11 +8038,11 @@ void EditorNode::_feature_profile_changed() {
  		editor_dock_manager->set_dock_enabled(history_dock, true);
  		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_3D, true);
  		editor_main_screen->set_button_enabled(EditorMainScreen::EDITOR_SCRIPT, true);
@@ -766,7 +781,7 @@ index 5bc4649..d8f4458 100644
  		}
  	}
  
-@@ -8075,7 +8238,7 @@ void EditorNode::_build_project_menu() {
+@@ -8075,7 +8239,7 @@ void EditorNode::_build_project_menu() {
  	project_menu->add_shortcut(ED_GET_SHORTCUT("editor/export"), PROJECT_EXPORT);
  	project_menu->add_item(TTRC("Pack Project as ZIP..."), PROJECT_PACK_AS_ZIP);
  	project_menu->add_item(TTRC("Install Android Build Template..."), PROJECT_INSTALL_ANDROID_SOURCE);
@@ -775,7 +790,7 @@ index 5bc4649..d8f4458 100644
  	project_menu->add_item(TTRC("Open User Data Folder"), PROJECT_OPEN_USER_DATA_FOLDER);
  #endif
  	project_menu->add_separator();
-@@ -8126,7 +8289,7 @@ void EditorNode::_build_settings_menu() {
+@@ -8126,7 +8290,7 @@ void EditorNode::_build_settings_menu() {
  	settings_menu->add_shortcut(ED_GET_SHORTCUT("editor/fullscreen_mode"), EDITOR_TOGGLE_FULLSCREEN);
  	settings_menu->add_separator();
  
@@ -784,7 +799,7 @@ index 5bc4649..d8f4458 100644
  	if (EditorPaths::get_singleton()->get_data_dir() == EditorPaths::get_singleton()->get_config_dir()) {
  		// Configuration and data folders are located in the same place.
  		settings_menu->add_item(TTRC("Open Editor Data/Settings Folder"), EDITOR_OPEN_DATA_FOLDER);
-@@ -8140,7 +8303,7 @@ void EditorNode::_build_settings_menu() {
+@@ -8140,7 +8304,7 @@ void EditorNode::_build_settings_menu() {
  
  	settings_menu->add_item(TTRC("Manage Editor Features..."), EDITOR_MANAGE_FEATURE_PROFILES);
  	settings_menu->add_item(TTRC("Manage Export Templates..."), EDITOR_MANAGE_EXPORT_TEMPLATES);
@@ -793,7 +808,7 @@ index 5bc4649..d8f4458 100644
  	settings_menu->add_item(TTRC("Configure FBX Importer..."), EDITOR_CONFIGURE_FBX_IMPORTER);
  #endif
  }
-@@ -8250,7 +8413,7 @@ void EditorNode::_update_main_menu_type() {
+@@ -8250,7 +8414,7 @@ void EditorNode::_update_main_menu_type() {
  			}
  		}
  
@@ -802,7 +817,7 @@ index 5bc4649..d8f4458 100644
  		// Align main menu icon visually with TouchActionsPanel buttons.
  		menu_btn_spacer = memnew(Control);
  		menu_btn_spacer->set_custom_minimum_size(Vector2(8, 0) * EDSCALE);
-@@ -8292,7 +8455,7 @@ void EditorNode::_bottom_panel_resized() {
+@@ -8292,7 +8456,7 @@ void EditorNode::_bottom_panel_resized() {
  	bottom_panel->set_bottom_panel_offset(center_split->get_split_offset());
  }
  
@@ -811,7 +826,7 @@ index 5bc4649..d8f4458 100644
  void EditorNode::_touch_actions_panel_mode_changed() {
  	int panel_mode = EDITOR_GET("interface/touchscreen/touch_actions_panel");
  	switch (panel_mode) {
-@@ -8672,7 +8835,7 @@ EditorNode::EditorNode() {
+@@ -8672,7 +8836,7 @@ EditorNode::EditorNode() {
  
  	main_vbox = memnew(VBoxContainer);
  
@@ -820,7 +835,7 @@ index 5bc4649..d8f4458 100644
  	base_vbox = memnew(VBoxContainer);
  	base_vbox->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT, Control::PRESET_MODE_MINSIZE, theme->get_constant(SNAME("window_border_margin"), EditorStringName(Editor)));
  
-@@ -8916,7 +9079,7 @@ EditorNode::EditorNode() {
+@@ -8916,7 +9080,7 @@ EditorNode::EditorNode() {
  	gui_base->add_child(about);
  	feature_profile_manager->connect("current_feature_profile_changed", callable_mp(this, &EditorNode::_feature_profile_changed));
  
@@ -829,7 +844,18 @@ index 5bc4649..d8f4458 100644
  	fbx_importer_manager = memnew(FBXImporterManager);
  	gui_base->add_child(fbx_importer_manager);
  #endif
-@@ -9392,9 +9555,13 @@ EditorNode::EditorNode() {
+@@ -9090,6 +9254,10 @@ EditorNode::EditorNode() {
+ 	title_bar->add_child(project_run_bar);
+ 	project_run_bar->connect("play_pressed", callable_mp(this, &EditorNode::_project_run_started));
+ 	project_run_bar->connect("stop_pressed", callable_mp(this, &EditorNode::_project_run_stopped));
++	if (OS::get_singleton()->is_in_process_instances_enabled()) {
++		// The game runs in this process, in a floating window next to the editor.
++		gui_base->add_child(memnew(InProcessGameWindow));
++	}
+ 
+ 	right_menu_hb = memnew(HBoxContainer);
+ 	right_menu_hb->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+@@ -9392,9 +9560,13 @@ EditorNode::EditorNode() {
  	add_editor_plugin(memnew(Node3DEditorPlugin));
  	add_editor_plugin(memnew(ScriptEditorPlugin));
  
@@ -843,7 +869,7 @@ index 5bc4649..d8f4458 100644
  
  	EditorAudioBuses *audio_bus_editor = EditorAudioBuses::register_editor();
  
-@@ -9660,5 +9827,30 @@ EditorNode::~EditorNode() {
+@@ -9660,5 +9832,30 @@ EditorNode::~EditorNode() {
  
  	file_dialogs.clear();
  
@@ -1486,23 +1512,40 @@ index c66d3bd..f04df87 100644
  	TextureLayeredEditor::finish_shaders();
  	TexturePreview::finish_shaders();
 diff --git a/editor/run/editor_run.cpp b/editor/run/editor_run.cpp
-index 8399876..c6e4269 100644
+index 8399876..9c89bf2 100644
 --- a/editor/run/editor_run.cpp
 +++ b/editor/run/editor_run.cpp
-@@ -158,6 +158,24 @@ Error EditorRun::run(const String &p_scene, const String &p_write_movie, const V
+@@ -32,9 +32,11 @@
+ 
+ #include "core/config/project_settings.h"
+ #include "core/io/config_file.h"
++#include "core/io/resource_uid.h"
+ #include "core/os/os.h"
+ #include "editor/debugger/editor_debugger_node.h"
+ #include "editor/editor_node.h"
++#include "editor/run/in_process_game_window.h"
+ #include "editor/run/run_instances_dialog.h"
+ #include "editor/settings/editor_settings.h"
+ #include "main/main.h"
+@@ -158,6 +160,29 @@ Error EditorRun::run(const String &p_scene, const String &p_write_movie, const V
  		}
  	}
  
 +	if (OS::get_singleton()->is_in_process_instances_enabled()) {
 +		// The platform cannot spawn a separate game process (e.g. the iPadOS editor): the game runs
-+		// in this process after the editor shuts down, and the editor is reopened when it quits.
++		// in a second scene tree inside the editor process, shown in a floating window next to the
++		// editor (like the Android editor's game window). The editor stays open.
 +		if (RunInstancesDialog::get_singleton()->get_instance_count() > 1) {
 +			WARN_PRINT("Running multiple instances is not supported when the game runs in the editor process. Only one instance will be started.");
 +		}
-+		List<String> instance_args(args);
-+		RunInstancesDialog::get_singleton()->get_argument_list_for_instance(0, instance_args);
-+		RunInstancesDialog::get_singleton()->apply_custom_features(0);
-+		const Error err = EditorNode::get_singleton()->run_game_in_process(instance_args, p_scene);
++		String scene_to_run = p_scene;
++		if (scene_to_run.is_empty()) {
++			scene_to_run = GLOBAL_GET("application/run/main_scene");
++		}
++		scene_to_run = ResourceUID::ensure_path(scene_to_run);
++		ERR_FAIL_COND_V_MSG(scene_to_run.is_empty(), ERR_INVALID_PARAMETER, "No scene to run.");
++		ERR_FAIL_NULL_V(InProcessGameWindow::get_singleton(), ERR_UNAVAILABLE);
++		const Error err = InProcessGameWindow::get_singleton()->start(scene_to_run);
 +		ERR_FAIL_COND_V(err, err);
 +		status = STATUS_PLAY;
 +		if (!p_scene.is_empty()) {
@@ -1514,7 +1557,17 @@ index 8399876..c6e4269 100644
  	String exec = OS::get_singleton()->get_executable_path();
  	int instance_count = RunInstancesDialog::get_singleton()->get_instance_count();
  	for (int i = 0; i < instance_count; i++) {
-@@ -240,6 +258,10 @@ ProcessID EditorRun::get_current_process() const {
+@@ -220,6 +245,9 @@ void EditorRun::stop_child_process(ProcessID p_pid) {
+ }
+ 
+ void EditorRun::stop() {
++	if (InProcessGameWindow::get_singleton()) {
++		InProcessGameWindow::get_singleton()->stop();
++	}
+ 	if (status != STATUS_STOP && pids.size() > 0) {
+ 		for (const ProcessID &E : pids) {
+ 			OS::get_singleton()->kill(E);
+@@ -240,6 +268,10 @@ ProcessID EditorRun::get_current_process() const {
  
  EditorRun::WindowPlacement EditorRun::get_window_placement() {
  	WindowPlacement placement = WindowPlacement();
@@ -1661,6 +1714,411 @@ index ddcc21d..3236553 100644
  	virtual void make_visible(bool p_visible) override;
  
  	virtual void set_window_layout(Ref<ConfigFile> p_layout) override;
+diff --git a/editor/run/in_process_game_window.cpp b/editor/run/in_process_game_window.cpp
+new file mode 100644
+index 0000000..584fa42
+--- /dev/null
++++ b/editor/run/in_process_game_window.cpp
+@@ -0,0 +1,303 @@
++/**************************************************************************/
++/*  in_process_game_window.cpp                                            */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#include "in_process_game_window.h"
++
++#include "core/config/project_settings.h"
++#include "core/input/touch_gesture_recognizer.h"
++#include "editor/editor_node.h"
++#include "editor/editor_string_names.h"
++#include "editor/run/editor_run_bar.h"
++#include "editor/themes/editor_scale.h"
++#include "scene/gui/box_container.h"
++#include "scene/gui/button.h"
++#include "scene/gui/label.h"
++#include "scene/main/in_process_game.h"
++
++InProcessGameWindow *InProcessGameWindow::singleton = nullptr;
++
++// InProcessGameView
++
++Vector2 InProcessGameView::_get_pixel_scale() const {
++	const Vector2 s = get_global_transform_with_canvas().get_scale();
++	return Vector2(MAX(s.x, 0.01), MAX(s.y, 0.01));
++}
++
++void InProcessGameView::_notification(int p_what) {
++	switch (p_what) {
++		case NOTIFICATION_INTERNAL_PROCESS: {
++			InProcessGame *game = InProcessGame::get_singleton();
++			if (InProcessGame::is_running() && is_visible_in_tree()) {
++				// The game's root window has the size of this view in pixels, like a real window.
++				game->set_size(Size2i((get_size() * _get_pixel_scale()).round()));
++				// Taps on the game reach it immediately (no wait for a possible two-finger gesture).
++				TouchGestureRecognizer::direct_input_area = Rect2(get_screen_position() - Vector2(get_tree()->get_root()->get_position()), get_size() * _get_pixel_scale());
++			} else {
++				TouchGestureRecognizer::direct_input_area = Rect2();
++			}
++			queue_redraw();
++		} break;
++		case NOTIFICATION_DRAW: {
++			draw_rect(Rect2(Point2(), get_size()), Color(0, 0, 0));
++			if (InProcessGame::is_running()) {
++				Ref<Texture2D> tex = InProcessGame::get_singleton()->get_texture();
++				if (tex.is_valid()) {
++					draw_texture_rect(tex, Rect2(Point2(), get_size()), false);
++				}
++			}
++		} break;
++	}
++}
++
++void InProcessGameView::gui_input(const Ref<InputEvent> &p_event) {
++	if (!InProcessGame::is_running()) {
++		return;
++	}
++	Ref<InputEventMouseButton> mb = p_event;
++	if (mb.is_valid() && mb->is_pressed()) {
++		grab_focus(); // Keyboard input goes to the game after it was touched/clicked.
++	}
++	Ref<InputEventScreenTouch> st = p_event;
++	if (st.is_valid() && st->is_pressed()) {
++		grab_focus();
++	}
++
++	// Convert from this control's coordinates to the game window's pixels.
++	const Vector2 scale = _get_pixel_scale();
++	Ref<InputEvent> ev = p_event->duplicate();
++	Ref<InputEventMouse> mouse = ev;
++	if (mouse.is_valid()) {
++		mouse->set_position(mouse->get_position() * scale);
++		mouse->set_global_position(mouse->get_position());
++		Ref<InputEventMouseMotion> mm = ev;
++		if (mm.is_valid()) {
++			mm->set_relative(mm->get_relative() * scale);
++			mm->set_relative_screen_position(mm->get_relative_screen_position() * scale);
++			mm->set_screen_velocity(mm->get_screen_velocity() * scale);
++			mm->set_velocity(mm->get_velocity() * scale);
++		}
++	}
++	Ref<InputEventScreenTouch> touch = ev;
++	if (touch.is_valid()) {
++		touch->set_position(touch->get_position() * scale);
++	}
++	Ref<InputEventScreenDrag> drag = ev;
++	if (drag.is_valid()) {
++		drag->set_position(drag->get_position() * scale);
++		drag->set_relative(drag->get_relative() * scale);
++		drag->set_relative_screen_position(drag->get_relative_screen_position() * scale);
++		drag->set_screen_velocity(drag->get_screen_velocity() * scale);
++		drag->set_velocity(drag->get_velocity() * scale);
++	}
++	Ref<InputEventGesture> gesture = ev;
++	if (gesture.is_valid()) {
++		gesture->set_position(gesture->get_position() * scale);
++	}
++	accept_event();
++	InProcessGame::get_singleton()->push_input(ev);
++}
++
++InProcessGameView::InProcessGameView() {
++	set_focus_mode(FOCUS_ALL);
++	set_mouse_filter(MOUSE_FILTER_STOP);
++	set_clip_contents(true);
++	set_process_internal(true);
++	set_v_size_flags(SIZE_EXPAND_FILL);
++	set_h_size_flags(SIZE_EXPAND_FILL);
++}
++
++// InProcessGameWindow
++
++void InProcessGameWindow::_notification(int p_what) {
++	switch (p_what) {
++		case NOTIFICATION_THEME_CHANGED: {
++			stop_button->set_button_icon(get_editor_theme_icon(SNAME("Stop")));
++			restart_button->set_button_icon(get_editor_theme_icon(SNAME("Reload")));
++			maximize_button->set_button_icon(get_editor_theme_icon(SNAME("DistractionFree")));
++		} break;
++		case NOTIFICATION_EXIT_TREE: {
++			// The editor is closing (or reloading the project): stop the game first.
++			InProcessGame::stop();
++		} break;
++	}
++}
++
++void InProcessGameWindow::_place_initially() {
++	Window *editor_root = get_parent_visible_window();
++	Size2 area = editor_root ? Size2(editor_root->get_visible_rect().size) : Size2(1280, 720);
++	Size2 game_size(GLOBAL_GET("display/window/size/viewport_width"), GLOBAL_GET("display/window/size/viewport_height"));
++	if (game_size.x <= 0 || game_size.y <= 0) {
++		game_size = Size2(1152, 648);
++	}
++	// About 40% of the editor's width (more for portrait games), keeping the game's aspect ratio.
++	const float aspect = game_size.y / game_size.x;
++	float w = area.x * (aspect > 1.0 ? 0.3 : 0.42);
++	float h = w * aspect + 40 * EDSCALE;
++	if (h > area.y * 0.8) {
++		h = area.y * 0.8;
++		w = (h - 40 * EDSCALE) / aspect;
++	}
++	const Size2i size_i = Size2i(w, h);
++	set_size(size_i);
++	set_position(Point2i(area.x - size_i.x - 16 * EDSCALE, area.y - size_i.y - 60 * EDSCALE).maxi(0));
++}
++
++Error InProcessGameWindow::start(const String &p_scene) {
++	if (InProcessGame::is_running()) {
++		InProcessGame::stop();
++	}
++	scene = p_scene;
++	if (!is_visible()) {
++		if (!maximized) {
++			_place_initially();
++		}
++		show();
++	}
++	set_title(vformat(TTR("Game: %s"), GLOBAL_GET("application/config/name")));
++	status_label->set_text(p_scene.get_file());
++	// The game's window has the size of the view (computed once the window is laid out).
++	const Size2i view_size = view->get_size() == Size2() ? Size2i(get_size().x, MAX(get_size().y - 40 * EDSCALE, 64)) : Size2i(view->get_size());
++	const Error err = InProcessGame::start(p_scene, view_size, EditorNode::get_singleton()->get_tree()->get_root(), callable_mp(this, &InProcessGameWindow::_game_finished));
++	if (err != OK) {
++		hide();
++		return err;
++	}
++	view->grab_focus();
++	return OK;
++}
++
++void InProcessGameWindow::stop() {
++	InProcessGame::stop();
++	hide();
++}
++
++bool InProcessGameWindow::is_running() const {
++	return InProcessGame::is_running();
++}
++
++void InProcessGameWindow::_game_finished() {
++	if (InProcessGame::is_running()) {
++		return; // Restarted meanwhile.
++	}
++	hide();
++	if (EditorRunBar::get_singleton() && EditorRunBar::get_singleton()->is_playing()) {
++		EditorRunBar::get_singleton()->stop_playing();
++	}
++}
++
++void InProcessGameWindow::_stop_pressed() {
++	if (EditorRunBar::get_singleton() && EditorRunBar::get_singleton()->is_playing()) {
++		EditorRunBar::get_singleton()->stop_playing(); // Calls stop() through EditorRun::stop().
++	} else {
++		stop();
++	}
++}
++
++void InProcessGameWindow::_restart_pressed() {
++	if (!scene.is_empty()) {
++		start(scene);
++	}
++}
++
++void InProcessGameWindow::_maximize_toggled(bool p_pressed) {
++	Window *editor_root = get_parent_visible_window();
++	if (p_pressed == maximized || !editor_root) {
++		return;
++	}
++	maximized = p_pressed;
++	if (maximized) {
++		normal_rect = Rect2i(get_position(), get_size());
++		const Size2i area = editor_root->get_visible_rect().size;
++		const int title_height = get_theme_constant(SNAME("title_height"));
++		set_position(Point2i(0, title_height));
++		set_size(Size2i(area.x, area.y - title_height));
++	} else {
++		set_position(normal_rect.position);
++		set_size(normal_rect.size);
++	}
++}
++
++void InProcessGameWindow::_bind_methods() {
++}
++
++InProcessGameWindow::InProcessGameWindow() {
++	singleton = this;
++	set_title(TTR("Game"));
++	set_visible(false);
++	set_wrap_controls(true);
++	set_min_size(Size2i(200, 160) * EDSCALE);
++	set_flag(FLAG_RESIZE_DISABLED, false);
++	connect("close_requested", callable_mp(this, &InProcessGameWindow::_stop_pressed));
++
++	VBoxContainer *vb = memnew(VBoxContainer);
++	vb->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
++	vb->add_theme_constant_override("separation", 0);
++	add_child(vb);
++
++	HBoxContainer *toolbar = memnew(HBoxContainer);
++	vb->add_child(toolbar);
++
++	status_label = memnew(Label);
++	status_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
++	status_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
++	status_label->set_focus_mode(Control::FOCUS_ACCESSIBILITY);
++	toolbar->add_child(status_label);
++
++	restart_button = memnew(Button);
++	restart_button->set_flat(true);
++	restart_button->set_tooltip_text(TTR("Restart the game"));
++	restart_button->set_accessibility_name(TTRC("Restart"));
++	restart_button->connect(SceneStringName(pressed), callable_mp(this, &InProcessGameWindow::_restart_pressed));
++	toolbar->add_child(restart_button);
++
++	maximize_button = memnew(Button);
++	maximize_button->set_flat(true);
++	maximize_button->set_toggle_mode(true);
++	maximize_button->set_tooltip_text(TTR("Fill the editor / restore the window"));
++	maximize_button->set_accessibility_name(TTRC("Maximize"));
++	maximize_button->connect(SceneStringName(toggled), callable_mp(this, &InProcessGameWindow::_maximize_toggled));
++	toolbar->add_child(maximize_button);
++
++	stop_button = memnew(Button);
++	stop_button->set_flat(true);
++	stop_button->set_text(TTR("Stop"));
++	stop_button->set_tooltip_text(TTR("Stop the game"));
++	stop_button->connect(SceneStringName(pressed), callable_mp(this, &InProcessGameWindow::_stop_pressed));
++	toolbar->add_child(stop_button);
++
++	view = memnew(InProcessGameView);
++	vb->add_child(view);
++}
++
++InProcessGameWindow::~InProcessGameWindow() {
++	if (singleton == this) {
++		singleton = nullptr;
++	}
++}
+diff --git a/editor/run/in_process_game_window.h b/editor/run/in_process_game_window.h
+new file mode 100644
+index 0000000..1827eba
+--- /dev/null
++++ b/editor/run/in_process_game_window.h
+@@ -0,0 +1,90 @@
++/**************************************************************************/
++/*  in_process_game_window.h                                              */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#pragma once
++
++#include "scene/gui/control.h"
++#include "scene/main/window.h"
++
++class Button;
++class Label;
++
++// The running game's view: draws the game's off-screen root and forwards input to it.
++class InProcessGameView : public Control {
++	GDCLASS(InProcessGameView, Control);
++
++	Vector2 _get_pixel_scale() const;
++
++protected:
++	void _notification(int p_what);
++
++public:
++	virtual void gui_input(const Ref<InputEvent> &p_event) override;
++	InProcessGameView();
++};
++
++// Floating window next to the editor (like the Android editor's game window) that shows a game
++// running in the editor process (InProcessGame). The editor stays usable while the game runs.
++class InProcessGameWindow : public Window {
++	GDCLASS(InProcessGameWindow, Window);
++
++	static InProcessGameWindow *singleton;
++
++	InProcessGameView *view = nullptr;
++	Button *stop_button = nullptr;
++	Button *restart_button = nullptr;
++	Button *maximize_button = nullptr;
++	Label *status_label = nullptr;
++
++	String scene;
++	bool maximized = false;
++	Rect2i normal_rect;
++
++	void _place_initially();
++	void _game_finished();
++	void _stop_pressed();
++	void _restart_pressed();
++	void _maximize_toggled(bool p_pressed);
++
++protected:
++	void _notification(int p_what);
++	static void _bind_methods();
++
++public:
++	static InProcessGameWindow *get_singleton() { return singleton; }
++
++	Error start(const String &p_scene);
++	void stop();
++	bool is_running() const;
++	InProcessGameView *get_view() const { return view; }
++
++	InProcessGameWindow();
++	~InProcessGameWindow();
++};
 diff --git a/editor/run/run_instances_dialog.cpp b/editor/run/run_instances_dialog.cpp
 index 41b6217..460f76b 100644
 --- a/editor/run/run_instances_dialog.cpp

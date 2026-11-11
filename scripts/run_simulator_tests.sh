@@ -159,6 +159,25 @@ copy_log e2e
 cp "$DATA/Library/Caches/in_process_game.log" "$RESULTS/" 2>/dev/null
 find "$DATA" -name "in_process_game.log" -exec cp {} "$RESULTS/" \; 2>/dev/null
 
+# --- 3b. Floppy Bird played in the game window next to the editor ----------------------------------
+rm -rf "$DOCS/flappy" && cp -R "$ROOT/tests/projects/flappy" "$DOCS/flappy"
+mkdir -p "$DOCS/flappy/.test_results" && touch "$DOCS/flappy/.test_results/PODOT_FLAPPY"
+launch flappy --verbose --editor --path "$DOCS/flappy"
+for i in 1 2 3 4; do sleep 15; shot "07_flappy_$i"; done
+if wait_for_file "$DOCS/flappy/.test_results/flappy.json" 1200 'd["done"]'; then
+	python3 - "$DOCS/flappy/.test_results/flappy.json" <<'PY' | tee -a "$SUMMARY"
+import json, sys
+d = json.load(open(sys.argv[1]))
+for name, c in sorted(d["checks"].items()):
+    print(("PASS" if c["ok"] else "FAIL"), "flappy:" + name, c["detail"][:160].replace("\n", " "))
+PY
+else
+	result FAIL flappy "did not finish; partial: $(cat "$DOCS/flappy/.test_results/flappy.json" 2>/dev/null | head -c 2000)"
+	tail -40 "$DOCS/logs/flappy.log" 2>/dev/null
+fi
+cp -R "$DOCS/flappy/.test_results" "$RESULTS/flappy_results" 2>/dev/null
+copy_log flappy
+
 # --- 4. Application suspension and resumption -------------------------------------------------------
 rm -rf "$DOCS/e2e/.test_results" && mkdir -p "$DOCS/e2e/.test_results" && touch "$DOCS/e2e/.test_results/PODOT_LIFECYCLE"
 launch lifecycle --editor --path "$DOCS/e2e"

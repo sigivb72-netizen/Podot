@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sigivb72-netizen <vergilx63@gmail.com>
-Date: Wed, 11 Nov 2026 04:07:43 +0000
+Date: Wed, 11 Nov 2026 05:50:14 +0000
 Subject: [PATCH 1/5] podot: core: in-process instances and a re-entrant engine
  core
 
@@ -31,12 +31,17 @@ input_devices/pointing/ios/pencil_as_mouse.
 
 Fix: Input dispatched every gesture event twice (pinch and trackpad pan
 were applied twice on all platforms).
+
+Main::iteration() steps a game running inside the editor process
+(InProcessGame) after the editor's frame, with physics callbacks in game
+mode. TouchGestureRecognizer: touches starting in a direct-input area (the
+game window) are delivered immediately and never become gestures.
 ---
  core/config/project_settings.cpp        |   2 +
  core/input/input.cpp                    |  11 +-
  core/input/input_map.cpp                |  12 +-
- core/input/touch_gesture_recognizer.cpp | 276 ++++++++++++++++++++++++
- core/input/touch_gesture_recognizer.h   | 115 ++++++++++
+ core/input/touch_gesture_recognizer.cpp | 295 ++++++++++++++++++++++++
+ core/input/touch_gesture_recognizer.h   | 121 ++++++++++
  core/io/file_access_zip.cpp             |   3 +
  core/io/ip.cpp                          |   1 +
  core/io/logger.cpp                      |   9 +
@@ -58,11 +63,11 @@ were applied twice on all platforms).
  core/string/translation_server.cpp      |   6 +
  core/string/translation_server.h        |   1 +
  doc/classes/ProjectSettings.xml         |   6 +
- main/main.cpp                           | 169 +++++++++++++++
+ main/main.cpp                           | 207 ++++++++++++++++-
  main/performance.cpp                    |   6 +
  main/performance.h                      |   1 +
- platform/linuxbsd/godot_linuxbsd.cpp    |  61 ++++--
- 30 files changed, 855 insertions(+), 45 deletions(-)
+ platform/linuxbsd/godot_linuxbsd.cpp    |  61 ++++-
+ 30 files changed, 906 insertions(+), 57 deletions(-)
  create mode 100644 core/input/touch_gesture_recognizer.cpp
  create mode 100644 core/input/touch_gesture_recognizer.h
 
@@ -140,10 +145,10 @@ index d18a781..201483e 100644
  		}
 diff --git a/core/input/touch_gesture_recognizer.cpp b/core/input/touch_gesture_recognizer.cpp
 new file mode 100644
-index 0000000..5ae9cce
+index 0000000..99c8b18
 --- /dev/null
 +++ b/core/input/touch_gesture_recognizer.cpp
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,295 @@
 +/**************************************************************************/
 +/*  touch_gesture_recognizer.cpp                                          */
 +/**************************************************************************/
@@ -279,8 +284,17 @@ index 0000000..5ae9cce
 +	last_distance = distance;
 +}
 +
++Rect2 TouchGestureRecognizer::direct_input_area;
++
 +void TouchGestureRecognizer::touch_press(int p_index, const Vector2 &p_position, bool p_pressed, bool p_double_tap, uint64_t p_usec) {
-+	if (!enabled) {
++	if (enabled && p_pressed && mode == MODE_IDLE && direct_input_area.has_area() && direct_input_area.has_point(p_position)) {
++		direct_fingers.insert(p_index);
++	}
++	const bool direct = direct_fingers.has(p_index);
++	if (direct && !p_pressed) {
++		direct_fingers.erase(p_index);
++	}
++	if (!enabled || direct) {
 +		Ref<InputEventScreenTouch> ev;
 +		ev.instantiate();
 +		ev->set_index(p_index);
@@ -360,7 +374,7 @@ index 0000000..5ae9cce
 +}
 +
 +void TouchGestureRecognizer::touch_drag(int p_index, const Vector2 &p_position, const Ref<InputEventScreenDrag> &p_drag, uint64_t p_usec) {
-+	if (!enabled) {
++	if (!enabled || direct_fingers.has(p_index)) {
 +		_emit(p_drag);
 +		return;
 +	}
@@ -397,6 +411,16 @@ index 0000000..5ae9cce
 +}
 +
 +void TouchGestureRecognizer::touch_cancel(int p_index, uint64_t p_usec) {
++	if (direct_fingers.has(p_index)) {
++		direct_fingers.erase(p_index);
++		Ref<InputEventScreenTouch> ev;
++		ev.instantiate();
++		ev->set_index(p_index);
++		ev->set_pressed(false);
++		ev->set_canceled(true);
++		_emit(ev);
++		return;
++	}
 +	if (!enabled || mode == MODE_PASSTHROUGH) {
 +		Ref<InputEventScreenTouch> ev;
 +		ev.instantiate();
@@ -422,10 +446,10 @@ index 0000000..5ae9cce
 +}
 diff --git a/core/input/touch_gesture_recognizer.h b/core/input/touch_gesture_recognizer.h
 new file mode 100644
-index 0000000..3df0d7f
+index 0000000..c82e601
 --- /dev/null
 +++ b/core/input/touch_gesture_recognizer.h
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,121 @@
 +/**************************************************************************/
 +/*  touch_gesture_recognizer.h                                            */
 +/**************************************************************************/
@@ -460,6 +484,7 @@ index 0000000..3df0d7f
 +
 +#include "core/input/input_event.h"
 +#include "core/templates/hash_map.h"
++#include "core/templates/hash_set.h"
 +#include "core/variant/callable.h"
 +
 +// Drawing-app style multi-touch navigation for touchscreens (used by the iPadOS editor):
@@ -516,6 +541,8 @@ index 0000000..3df0d7f
 +	float last_distance = 0.0;
 +	float move_threshold = 10.0; // Pixels.
 +
++	HashSet<int> direct_fingers; // Touches that started in the direct-input area.
++
 +	EmitFunc emit_func = nullptr;
 +	TapFunc tap_func = nullptr;
 +	void *userdata = nullptr;
@@ -528,6 +555,9 @@ index 0000000..3df0d7f
 +
 +public:
 +	bool enabled = false;
++	// Touches that start inside this area (window pixels) are delivered immediately and never
++	// become gestures, e.g. the game running in a window next to the editor (taps without delay).
++	static Rect2 direct_input_area;
 +
 +	void set_callbacks(EmitFunc p_emit, TapFunc p_tap, void *p_userdata);
 +	void set_move_threshold(float p_pixels) { move_threshold = p_pixels; }
@@ -1098,10 +1128,18 @@ index 14e3133..7d40baf 100644
  			If [code]true[/code], the accelerometer sensor is enabled and [method Input.get_accelerometer] returns valid data.
  		</member>
 diff --git a/main/main.cpp b/main/main.cpp
-index 2fc62fd..22819f7 100644
+index 2fc62fd..b3cf936 100644
 --- a/main/main.cpp
 +++ b/main/main.cpp
-@@ -297,6 +297,124 @@ bool profile_gpu = false;
+@@ -62,6 +62,7 @@
+ #include "drivers/register_driver_types.h"
+ #include "main/app_icon.gen.h"
+ #include "main/main_timer_sync.h"
++#include "scene/main/in_process_game.h"
+ #include "main/performance.h"
+ #include "main/splash.gen.h"
+ #include "scene/main/scene_tree.h"
+@@ -297,6 +298,124 @@ bool profile_gpu = false;
  
  // Constants.
  
@@ -1226,7 +1264,7 @@ index 2fc62fd..22819f7 100644
  static const String NULL_DISPLAY_DRIVER("headless");
  static const String EMBEDDED_DISPLAY_DRIVER("embedded");
  static const String NULL_AUDIO_DRIVER("Dummy");
-@@ -975,6 +1093,10 @@ void Main::test_cleanup() {
+@@ -975,6 +1094,10 @@ void Main::test_cleanup() {
  
  	OS::get_singleton()->finalize_core();
  
@@ -1237,7 +1275,7 @@ index 2fc62fd..22819f7 100644
  	Thread::release_main_thread();
  }
  #endif // TESTS_ENABLED
-@@ -1037,7 +1159,26 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
+@@ -1037,7 +1160,26 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
  	Thread::make_main_thread();
  	set_current_thread_safe_for_nodes(true);
  
@@ -1264,7 +1302,7 @@ index 2fc62fd..22819f7 100644
  
  	CoreGlobals::print_ready = true;
  
-@@ -2986,6 +3127,7 @@ error:
+@@ -2986,6 +3128,7 @@ error:
  		memdelete(engine);
  	}
  
@@ -1272,7 +1310,7 @@ index 2fc62fd..22819f7 100644
  	unregister_core_types();
  
  	OS::get_singleton()->_cmdline.clear();
-@@ -3006,6 +3148,10 @@ error:
+@@ -3006,6 +3149,10 @@ error:
  	OS::get_singleton()->finalize_core();
  	locale = String();
  
@@ -1283,7 +1321,7 @@ index 2fc62fd..22819f7 100644
  	Thread::release_main_thread();
  
  	return exit_err;
-@@ -4915,6 +5061,13 @@ static uint64_t physics_process_max = 0;
+@@ -4915,6 +5062,13 @@ static uint64_t physics_process_max = 0;
  static uint64_t process_max = 0;
  static uint64_t navigation_process_max = 0;
  
@@ -1297,7 +1335,89 @@ index 2fc62fd..22819f7 100644
  // Return false means iterating further, returning true means `OS::run`
  // will terminate the program. In case of failure, the OS exit code needs
  // to be set explicitly here (defaults to EXIT_SUCCESS).
-@@ -5258,6 +5411,14 @@ void Main::cleanup(bool p_force) {
+@@ -4985,17 +5139,22 @@ bool Main::iteration() {
+ 		GodotProfileZoneGrouped(_physics_zone, "main loop iteration prepare");
+ 		OS::get_singleton()->get_main_loop()->iteration_prepare();
+ 
++		{
++			// Physics callbacks belong to a game running inside the editor, if any (the editor's
++			// own spaces are paused while it runs).
++			InProcessGame::Scope game_scope;
+ #ifndef PHYSICS_3D_DISABLED
+-		GodotProfileZoneGrouped(_physics_zone, "PhysicsServer3D::sync");
+-		PhysicsServer3D::get_singleton()->sync();
+-		PhysicsServer3D::get_singleton()->flush_queries();
++			GodotProfileZoneGrouped(_physics_zone, "PhysicsServer3D::sync");
++			PhysicsServer3D::get_singleton()->sync();
++			PhysicsServer3D::get_singleton()->flush_queries();
+ #endif // PHYSICS_3D_DISABLED
+ 
+ #ifndef PHYSICS_2D_DISABLED
+-		GodotProfileZoneGrouped(_physics_zone, "PhysicsServer2D::sync");
+-		PhysicsServer2D::get_singleton()->sync();
+-		PhysicsServer2D::get_singleton()->flush_queries();
++			GodotProfileZoneGrouped(_physics_zone, "PhysicsServer2D::sync");
++			PhysicsServer2D::get_singleton()->sync();
++			PhysicsServer2D::get_singleton()->flush_queries();
+ #endif // PHYSICS_2D_DISABLED
++		}
+ 
+ 		GodotProfileZoneGrouped(_physics_zone, "physics_process");
+ 		if (OS::get_singleton()->get_main_loop()->physics_process(physics_step * time_scale)) {
+@@ -5010,6 +5169,7 @@ bool Main::iteration() {
+ 			exit = true;
+ 			break;
+ 		}
++		InProcessGame::physics_frame(physics_step * time_scale);
+ 
+ #if !defined(NAVIGATION_2D_DISABLED) || !defined(NAVIGATION_3D_DISABLED)
+ 		uint64_t navigation_begin = OS::get_singleton()->get_ticks_usec();
+@@ -5029,17 +5189,20 @@ bool Main::iteration() {
+ 		message_queue->flush();
+ #endif // !defined(NAVIGATION_2D_DISABLED) || !defined(NAVIGATION_3D_DISABLED)
+ 
++		{
++			InProcessGame::Scope game_scope;
+ #ifndef PHYSICS_3D_DISABLED
+-		GodotProfileZoneGrouped(_profile_zone, "3D physics");
+-		PhysicsServer3D::get_singleton()->end_sync();
+-		PhysicsServer3D::get_singleton()->step(physics_step * time_scale);
++			GodotProfileZoneGrouped(_profile_zone, "3D physics");
++			PhysicsServer3D::get_singleton()->end_sync();
++			PhysicsServer3D::get_singleton()->step(physics_step * time_scale);
+ #endif // PHYSICS_3D_DISABLED
+ 
+ #ifndef PHYSICS_2D_DISABLED
+-		GodotProfileZoneGrouped(_profile_zone, "2D physics");
+-		PhysicsServer2D::get_singleton()->end_sync();
+-		PhysicsServer2D::get_singleton()->step(physics_step * time_scale);
++			GodotProfileZoneGrouped(_profile_zone, "2D physics");
++			PhysicsServer2D::get_singleton()->end_sync();
++			PhysicsServer2D::get_singleton()->step(physics_step * time_scale);
+ #endif // PHYSICS_2D_DISABLED
++		}
+ 
+ 		message_queue->flush();
+ 
+@@ -5063,6 +5226,7 @@ bool Main::iteration() {
+ 		exit = true;
+ 	}
+ 	message_queue->flush();
++	InProcessGame::process_frame(process_step * time_scale);
+ 
+ #ifndef NAVIGATION_2D_DISABLED
+ 	GodotProfileZoneGrouped(_profile_zone, "process 2D navigation");
+@@ -5222,6 +5386,9 @@ void Main::cleanup(bool p_force) {
+ 		ERR_FAIL_COND(!_start_success);
+ 	}
+ 
++	// A game running inside the editor process must be gone before the editor is freed.
++	InProcessGame::stop();
++
+ 	// Printing in the usual way can become problematic during/after cleanup.
+ 	CoreGlobals::print_ready = false;
+ 
+@@ -5258,6 +5425,14 @@ void Main::cleanup(bool p_force) {
  
  	OS::get_singleton()->delete_main_loop();
  
@@ -1312,7 +1432,7 @@ index 2fc62fd..22819f7 100644
  	OS::get_singleton()->_cmdline.clear();
  	OS::get_singleton()->_user_args.clear();
  	OS::get_singleton()->_execpath = "";
-@@ -5395,6 +5556,10 @@ void Main::cleanup(bool p_force) {
+@@ -5395,6 +5570,10 @@ void Main::cleanup(bool p_force) {
  		memdelete(engine);
  	}
  
@@ -1323,7 +1443,7 @@ index 2fc62fd..22819f7 100644
  	unregister_core_types();
  
  	OS::get_singleton()->benchmark_end_measure("Shutdown", "Main::Cleanup");
-@@ -5402,5 +5567,9 @@ void Main::cleanup(bool p_force) {
+@@ -5402,5 +5581,9 @@ void Main::cleanup(bool p_force) {
  
  	OS::get_singleton()->finalize_core();
  
