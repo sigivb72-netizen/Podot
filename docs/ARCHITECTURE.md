@@ -62,25 +62,40 @@ AddressSanitizer, headless and with the real OpenGL ES 3 renderer and X11 displa
 
 ### Running the game ("Play")
 
-`EditorRun::run()` checks `OS::is_in_process_instances_enabled()` and calls
-`EditorNode::run_game_in_process()`:
+The Android editor runs the game in a second process (`android:process=":GodotGame"`) shown in a
+separate window next to the editor. iOS doesn't allow starting processes, so Podot runs the game
+in a **second `SceneTree` inside the editor process** and shows it in a floating window on top of
+the editor (`InProcessGame`, `scene/main/in_process_game.cpp`; `InProcessGameWindow`,
+`editor/run/in_process_game_window.cpp`). The editor stays open and usable while the game runs.
 
-1. The scenes are saved (as before running on desktop, `run/auto_save/save_before_running`).
-2. The game's arguments are the regular ones, minus `--remote-debug`/`--editor-pid` (the editor is
-   not running while the game runs), plus `--log-file <editor cache>/in_process_game.log`.
-3. The game, then the editor (same project, same edited scene) are queued, and the editor exits
-   normally (`_exit_editor()`: layout saved, plugins unloaded).
-4. The game runs with the whole device memory available. It ends when it calls
-   `get_tree().quit()`, when the user taps the floating **Stop** button (native UIKit control
-   added by the iOS platform code), or presses **F8** / **⌘.** on a hardware keyboard.
-5. The editor is set up again, reopens the project and scenes, and prints the game's output into
-   the Output dock with errors and warnings classified, plus the exit code and run time.
+* The game's root `Window` renders off-screen (`Window::set_offscreen_root()`): it doesn't take
+  over the device screen; its viewport texture is drawn by the game window, whose size is the
+  game's window size (the project's stretch settings apply as in a real window).
+* `Main::iteration()` steps the game after the editor's frame (physics and process frames).
+  While game code runs (loading, input, physics callbacks, frames) the engine is in *game mode*:
+  `Engine::is_editor_hint()` is false and scripting is enabled, so the project's scripts get real
+  instances; everything else runs in editor mode.
+* The editor's physics spaces are paused while the physics servers run for the game; the project's
+  input actions and autoloads are added for the game's lifetime and removed afterwards.
+* Touch, mouse, trackpad and keyboard input on the game window are forwarded to the game (touches
+  focus the window and skip the editor's two-finger gesture delay).
+* The window can be moved, resized and maximized; **Stop** (in the window or the editor's run
+  bar), **Restart**, or the game calling `get_tree().quit()` end it. Errors and prints from the game
+  appear in the editor's Output dock as they happen.
 
-If iPadOS terminates the app while the game runs (crash, memory pressure, app closed), a marker
-file makes the next launch go straight back to that project's editor and report it.
+Limitations of sharing the process: the game shares loaded resources with the editor (a game that
+modifies a resource at runtime also changes it in the editor until it's reloaded), shares the
+`Input` singleton (taps elsewhere on the screen also count for `Input.is_action_pressed()`), and a
+crash in game code also closes the editor (the crash reporter shows the report on the next launch).
+`Engine.get_main_loop()` returns the editor's tree. The "viewport" stretch mode is shown stretched
+to the window (no letterboxing).
+
+The previous mode, where the editor shuts down while the game runs in-process and reopens when it
+quits (`EditorNode::run_game_in_process()`), is still used to relaunch the editor and project
+manager (`OS::create_instance` queues them, see above).
 
 The same mechanism can be enabled on Linux with `GODOT_IN_PROCESS_INSTANCES=1`, which is how the
-flow is tested without a Mac (`scripts/run_linux_tests.sh`).
+flow is tested without a Mac (`scripts/run_linux_tests.sh`, `tests/projects/flappy`).
 
 ## 2. iPadOS input
 

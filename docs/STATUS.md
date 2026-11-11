@@ -42,6 +42,35 @@ renderer, which makes the editor very slow there.
   Dummy audio driver freed its buffer again on the second in-process teardown. Fixed (regression
   test `[Podot][Audio]`); the fix awaits confirmation on the device.
 
+* Same tester: after the audio fix, Play no longer crashed, but the full-screen game had no visible
+  way back (the floating Stop button was hidden behind the game's rendering layer; fixed), and the
+  tester asked for the Android editor's behaviour (game in a window, editor stays open). Play now
+  works that way (see *Game window* below); awaiting device feedback.
+
+## Game window: the game runs next to the open editor
+
+Tested with `tests/projects/flappy` ("Floppy Bird", a Flappy Bird-style game: CharacterBody2D bird,
+Area2D pipes, Timer spawning, score label, autoload with best score, reload on restart). An
+editor-side test presses Play and plays it the way a person would: taps on the game window go
+through the editor's normal input path. Results (Linux, AddressSanitizer build, headless and
+OpenGL in single-window mode as on iPadOS; all **pass**):
+
+| Check | Result |
+|---|---|
+| Play opens the game in a floating window inside the editor; the editor stays open with the scene still being edited | ✅ |
+| Game code runs as a game (`Engine.is_editor_hint()` false), viewport is the project's 480×720 | ✅ |
+| A tap on the game window starts the game and flaps the bird | ✅ |
+| Physics, timer-spawned pipes, Area2D collisions: the autopilot (tapping when the bird drops below the gap) scored 4 | ✅ |
+| The editor stays usable during the game (an edit + undo on the edited scene) and keeps rendering | ✅ |
+| The game is visible in the window (OpenGL): pixel check plus screenshot | ✅ |
+| Crash into a pipe → game over; tap → `reload_current_scene()`; the autoload keeps the best score | ✅ |
+| Space key (project input action "flap") reaches the game once its window has focus | ✅ |
+| Stop from the editor closes the window; Play again works; `get_tree().quit()` in the game closes it | ✅ |
+| The edited scene is unchanged by the game | ✅ |
+
+On the iPad Simulator the same test runs in CI (`07_flappy_*` screenshots); see the latest run.
+On a physical iPad: *not verified yet*.
+
 ## Linux tests of the shared code (`scripts/run_linux_tests.sh`)
 
 Run locally with an AddressSanitizer build and in CI with a release build. **All pass**:
@@ -79,12 +108,15 @@ iPadOS-specific (implemented; see ARCHITECTURE.md):
 
 ## Known limitations
 
-* **Debugger while the game runs**: the editor is not running while the game runs (one process,
-  one engine instance at a time), so breakpoints, the remote scene tree and live editing don't
-  work for games started on the iPad. Errors, warnings and prints are shown in the Output dock
-  afterwards. The debugger still works for a game running on *another* device that connects to
-  the iPad's editor (upstream remote debugging), not verified.
-* **Game workspace / embedded game**: not available (needs a second process).
+* **Debugger for games started on the iPad**: the game runs inside the editor process, not as a
+  debugged child process, so breakpoints, the remote scene tree, the profiler and live editing
+  don't work for it. Errors, warnings and prints appear in the Output dock as they happen.
+* **Game shares the editor's process** (iOS can't start a second process as Android does):
+  resources loaded by both are shared (runtime changes to a shared resource show in the editor
+  until reloaded), `Input` is shared (taps outside the game window also count for
+  `Input.is_action_pressed()`), a crash in game code closes the editor too, and the "viewport"
+  stretch mode is shown without letterboxing. Details in `ARCHITECTURE.md`.
+* **Game workspace** (embedding a separate game process in the editor): not available.
 * **Several instances at once**: only one instance is started.
 * **External tools**: no terminal, external script editor, Blender importer, FBX2glTF (the built-in
   ufbx FBX importer works), or iOS export (needs Xcode). Other export platforms run their

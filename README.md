@@ -18,7 +18,7 @@ they open and save in the same formats as desktop Godot.
 | `scripts/build_ios_editor.sh` | Builds the editor static library for iPadOS (`device`) or the iOS Simulator (`simulator`). |
 | `scripts/package_ios_app.sh` | Links the library into `Podot.app`, signs it, and makes the IPA. |
 | `scripts/run_simulator_tests.sh` | Runs the editor in an iPad (10th generation) Simulator and checks real workflows. |
-| `scripts/run_linux_tests.sh` | Unit tests + the in-process editor → game → editor flow on a Linux editor build. |
+| `scripts/run_linux_tests.sh` | Unit tests, the end-to-end editor test and Floppy Bird played in the game window, on a Linux editor build. |
 | `app/` | Info.plist, entitlements, icons. |
 | `tests/projects/e2e/` | Test project with an editor plugin that drives the editor end to end. |
 | `.github/workflows/ipados-editor.yml` | CI on GitHub's macOS (Xcode) and Linux runners. |
@@ -88,7 +88,7 @@ scripts/run_linux_tests.sh godot/bin/godot.linuxbsd.editor.x86_64
   project there, or use the project manager's **Import** to open a folder anywhere (iCloud Drive,
   USB drive, other apps) through the system picker; it is edited in place and stays accessible
   across launches.
-* **Play** closes the editor, runs the game full-screen in the same app, and returns to the editor
-  when the game quits, when you tap the floating **Stop** button, or press **F8** / **⌘.**. The
-  game's output (with errors and warnings) appears in the Output dock.
+* **Play** opens the game in a floating window on top of the editor, like the Android editor's
+  game window: move it, resize it, maximize it, restart or stop it. The editor stays open and
+  usable while the game runs; the game's output appears in the Output dock as it happens.
 * Touch, Apple Pencil, keyboard, mouse and trackpad all work; see STATUS for details.
